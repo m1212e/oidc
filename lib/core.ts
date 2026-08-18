@@ -10,8 +10,10 @@ import {
   buildAuthorizationUrl,
   buildEndSessionUrl,
   calculatePKCECodeChallenge,
+  clockTolerance as clockToleranceOption,
   discovery,
   fetchUserInfo,
+  randomNonce,
   randomPKCECodeVerifier,
   randomState,
   refreshTokenGrant,
@@ -26,9 +28,19 @@ import {
   audienceVerifyOption,
   buildAudiencePolicy,
   OidcAudienceError,
-  type TokenKind,
 } from "./audience";
+import {
+  OidcTokenError,
+  OidcTokenValidationError,
+  type TokenKind,
+  type TokenValidationFailure,
+} from "./errors";
 import { buildLogger, type Logger, type LogLevel } from "./logger";
+import {
+  assertTokenTypeAfterJwtVerify,
+  assertTokenTypeFromClaims,
+  buildTokenTypePolicy,
+} from "./tokenType";
 import {
   type AccessTokenClaims,
   type IdTokenClaims,
@@ -49,6 +61,13 @@ export type OidcCoreOptions = {
    * audience on access tokens — stock Keycloak (`aud: "account"`) and Cognito
    * (no `aud` at all) both need the authorized-party claim instead.
    *
+   * Setting this makes the `aud` match the whole of the access-token binding,
+   * so {@link authorizedPartyClaims} stops being compared to
+   * {@link clientId}: an API is a different party from the client that called
+   * it, and requiring both rejects every ordinary API/SPA split. Tokens from
+   * any client the IdP lets request this audience are then accepted — supply
+   * {@link verifyAudience} if you also need to restrict which client that was.
+   *
    * Never compared against ID tokens, whose `aud` is always the client id.
    */
   expectedAudience?: string | string[];
@@ -57,6 +76,9 @@ export type OidcCoreOptions = {
    * priority order — the first one present must equal {@link clientId}.
    * Defaults to `["azp", "client_id", "cid", "appid"]`, which covers
    * RFC 9068, Keycloak, Auth0, Entra ID, Okta and Cognito.
+   *
+   * This is the binding used when {@link expectedAudience} is unset; with a
+   * resource audience configured, that takes over and these are not consulted.
    */
   authorizedPartyClaims?: readonly string[];
   /**
@@ -65,10 +87,36 @@ export type OidcCoreOptions = {
    */
   verifyAudience?: (claims: AudienceClaims, tokenKind: TokenKind) => boolean;
   /**
+   * Claims whose presence proves a JWT is an ID token, so a token presented as
+   * an *access* token carrying any of them is rejected outright. Defaults to
+   * `["nonce", "at_hash", "c_hash", "s_hash"]`.
+   *
+   * Only set this — to `[]`, or to a narrower list — if your provider is known
+   * to put one of them on access tokens; some older Keycloak versions copied
+   * `nonce` onto theirs.
+   */
+  idTokenOnlyClaims?: readonly string[];
+  /**
+   * Require this exact `typ` header on JWT access tokens: `"at+jwt"` for an
+   * RFC 9068 provider, `"Bearer"` for Keycloak. The `application/` prefix is
+   * optional either way.
+   *
+   * Unset by default, because Auth0 and Entra ID send a plain `"JWT"` on both
+   * token kinds, leaving nothing to pin. Set it wherever your provider does
+   * distinguish them: it is the only *complete* defence against an ID token
+   * being replayed as an access token, since {@link idTokenOnlyClaims} can
+   * only catch ID tokens that happen to carry one of those claims.
+   */
+  accessTokenTyp?: string;
+  /**
    * Clock skew tolerance for `exp`/`nbf`, in seconds or as a duration string
-   * (`"30 seconds"`). Defaults to 30s — with no tolerance, ordinary drift
-   * between your host and the IdP produces spurious expiry failures, which
-   * this library answers by spending a refresh token.
+   * (`"30 seconds"`, `"5m"`). Defaults to 30s — with no tolerance, ordinary
+   * drift between your host and the IdP produces spurious expiry failures,
+   * which this library answers by spending a refresh token.
+   *
+   * Applies to every timestamp this library checks: offline verification in
+   * {@link OidcCore.processTokens} and the ID token validated inside the code
+   * exchange and refresh alike.
    */
   clockTolerance?: string | number;
   /**
@@ -82,6 +130,11 @@ export type OidcCoreOptions = {
   /**
    * Allows discovery/token requests over plain HTTP. Only ever set this for a
    * local/dev IdP — never in production.
+   *
+   * Left unset, it is derived from the environment: on only when `NODE_ENV`
+   * is exactly `"development"`. An unset `NODE_ENV` counts as production,
+   * because that is the common deployment case and this switch must fail
+   * closed.
    */
   development?: boolean;
   logger?: Logger;
@@ -121,13 +174,84 @@ export type ProcessTokensResult = ValidationResult &
   );
 
 /**
+ * Resolves {@link OidcCoreOptions.development} against the environment when it
+ * was not passed explicitly.
+ *
+ * Only an exact `NODE_ENV=development` enables it. Deliberately not
+ * `NODE_ENV !== "production"`: the variable is frequently unset in production,
+ * and guessing wrong here means silently permitting plain-HTTP traffic to the
+ * IdP. `process` itself is checked because it is absent on edge runtimes.
+ */
+export function resolveDevelopment(development?: boolean): boolean {
+  if (development !== undefined) return development;
+  if (typeof process === "undefined") return false;
+  return process.env?.NODE_ENV === "development";
+}
+
+/** jose's duration grammar, minus the signed/relative forms a tolerance cannot use. */
+const DURATION_MULTIPLIERS: Record<string, number> = {
+  s: 1,
+  m: 60,
+  h: 3600,
+  d: 86400,
+  w: 604800,
+  y: 31557600,
+};
+const DURATION =
+  /^(\d+|\d+\.\d+) ?(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|years?|yrs?|y)$/i;
+
+/**
+ * Resolves {@link OidcCoreOptions.clockTolerance} to whole seconds.
+ *
+ * jose takes either a number or a duration string, `openid-client` only takes
+ * seconds, and the two must agree — a tolerance that applied to offline
+ * verification but not to the code exchange would leave exactly the drift it
+ * exists to absorb able to fail a login.
+ */
+export function resolveClockTolerance(
+  clockTolerance?: string | number,
+): number {
+  if (clockTolerance === undefined) return 30;
+
+  if (typeof clockTolerance === "number") {
+    if (!Number.isFinite(clockTolerance) || clockTolerance < 0) {
+      throw new TypeError(
+        `invalid clockTolerance (${clockTolerance}): expected a non-negative number of seconds`,
+      );
+    }
+    return clockTolerance;
+  }
+
+  const matched = DURATION.exec(clockTolerance.trim());
+  if (!matched) {
+    throw new TypeError(
+      `invalid clockTolerance ("${clockTolerance}"): expected seconds as a number, or a duration such as "30 seconds" or "5m"`,
+    );
+  }
+  const unit = (matched[2] as string)[0]?.toLowerCase() as string;
+  return Math.round(
+    Number.parseFloat(matched[1] as string) *
+      (DURATION_MULTIPLIERS[unit] as number),
+  );
+}
+
+/**
  * Discovers an OIDC issuer and returns the framework-agnostic operations
  * needed to implement a login: PKCE authorization-code flow, offline token
- * validation with a graceful fallback chain (JWKS → introspection →
- * UserInfo), refresh, and RP-initiated logout.
+ * validation with a graceful fallback chain (JWKS → introspection), refresh,
+ * and RP-initiated logout.
  */
 export async function createOidcCore(opts: OidcCoreOptions) {
   const log = buildLogger(opts.logger, opts.logLevel);
+  const development = resolveDevelopment(opts.development);
+
+  if (development) {
+    log.warn(
+      "[oidc] development mode is on: plain-HTTP requests to the IdP are allowed. Never enable this in production.",
+    );
+  }
+
+  const clockTolerance = resolveClockTolerance(opts.clockTolerance);
 
   const config = await discovery(
     new URL(opts.issuer),
@@ -135,15 +259,19 @@ export async function createOidcCore(opts: OidcCoreOptions) {
     {
       client_secret: opts.clientSecret,
       token_endpoint_auth_method: opts.clientSecret ? undefined : "none",
+      // Carries the tolerance into `openid-client`'s own timestamp checks —
+      // the ID token it validates during the code exchange and every refresh.
+      [clockToleranceOption]: clockTolerance,
     },
     undefined,
-    { execute: opts.development ? [allowInsecureRequests] : [] },
+    { execute: development ? [allowInsecureRequests] : [] },
   );
 
   const jwksUri = config.serverMetadata().jwks_uri;
   const jwks = jwksUri ? createRemoteJWKSet(new URL(jwksUri)) : undefined;
   const issuer = config.serverMetadata().issuer;
   const audiencePolicy = buildAudiencePolicy(opts);
+  const tokenTypePolicy = buildTokenTypePolicy(opts);
 
   const signingAlgorithms =
     opts.signingAlgorithms ??
@@ -154,14 +282,16 @@ export async function createOidcCore(opts: OidcCoreOptions) {
   /**
    * Everything jose can check on its own, so this library doesn't reimplement
    * it: signature, `iss`, `aud`, expiry with skew tolerance, required claim
-   * presence and algorithm pinning. Only the OIDC-specific authorized-party
-   * rules are left to {@link assertAudienceAfterJwtVerify}.
+   * presence and algorithm pinning. What is left to this library is the
+   * OIDC-specific authorized-party rule ({@link assertAudienceAfterJwtVerify})
+   * and the token-type binding jose has no concept of
+   * ({@link assertTokenTypeAfterJwtVerify}).
    */
   function jwtVerifyOptions(tokenKind: TokenKind): JWTVerifyOptions {
     return {
       issuer,
       audience: audienceVerifyOption(audiencePolicy, tokenKind),
-      clockTolerance: opts.clockTolerance ?? 30,
+      clockTolerance,
       algorithms: signingAlgorithms,
       // `issuer`/`audience` already force `iss`/`aud` presence. `exp` matters
       // most: without it jose happily accepts a token that never expires.
@@ -170,12 +300,6 @@ export async function createOidcCore(opts: OidcCoreOptions) {
           ? ["iss", "sub", "aud", "exp", "iat"]
           : ["iss", "sub", "exp"],
     };
-  }
-
-  if (opts.development) {
-    log.warn(
-      "[oidc] development mode is on: plain-HTTP requests to the IdP are allowed. Never enable this in production.",
-    );
   }
 
   /**
@@ -208,9 +332,14 @@ export async function createOidcCore(opts: OidcCoreOptions) {
   }): Promise<StartSigninResult> {
     const codeVerifier = randomPKCECodeVerifier();
     const codeChallenge = await calculatePKCECodeChallenge(codeVerifier);
+    // A value of its own rather than a second use of `random`: the two have
+    // different jobs and different exposure, and sharing one across both is a
+    // well-known anti-pattern.
+    const nonce = randomNonce();
     const state = JSON.stringify({
       visitedUrl: returnTo,
       random: randomState(),
+      nonce,
     });
 
     const authorizationUrl = buildAuthorizationUrl(config, {
@@ -219,6 +348,7 @@ export async function createOidcCore(opts: OidcCoreOptions) {
       code_challenge: codeChallenge,
       code_challenge_method: "S256",
       state,
+      nonce,
     });
 
     return { codeVerifier, authorizationUrl, state };
@@ -233,6 +363,16 @@ export async function createOidcCore(opts: OidcCoreOptions) {
     const tokens = await authorizationCodeGrant(config, callbackUrl, {
       pkceCodeVerifier: codeVerifier,
       expectedState,
+      // Binds the ID token to this authorization request. `undefined` is not
+      // "unchecked": it makes `openid-client` require the ID token to carry no
+      // `nonce` at all, which is the right expectation for a login started
+      // before {@link OIDCFlowState.nonce} existed.
+      expectedNonce: parsedState.nonce,
+      // An ID token is the point of asking for `openid` scope, so a response
+      // without one is a provider fault rather than a login with no subject.
+      // Implied by a string `expectedNonce`, set explicitly so the guarantee
+      // does not depend on one being present.
+      idTokenExpected: true,
     });
     assertGrantedIdToken(tokens);
     return { tokens, returnTo: parsedState.visitedUrl };
@@ -245,14 +385,22 @@ export async function createOidcCore(opts: OidcCoreOptions) {
   }
 
   /**
-   * Runs the offline-first validation fallback chain (JWKS → introspection →
-   * UserInfo). A JWKS failure specifically due to token expiry skips the
-   * remaining strategies and refreshes immediately instead — introspection
-   * and UserInfo would either fail the same way or waste a round trip on a
-   * token that's simply stale. Refreshing supersedes both tokens, so this
-   * applies even if only one of the two had expired. Any other failure mode
-   * (bad signature, unknown key, network error, ...) still runs the full
-   * chain, falling back to a refresh only once nothing at all validated.
+   * Runs the offline-first validation fallback chain (JWKS → introspection).
+   * A JWKS failure specifically due to token expiry skips introspection and
+   * refreshes immediately instead — introspection would either fail the same
+   * way or waste a round trip on a token that's simply stale. Refreshing
+   * supersedes both tokens, so this applies even if only one of the two had
+   * expired. Any other failure mode (bad signature, unknown key, network
+   * error, ...) still runs the full chain before falling back to a refresh.
+   *
+   * **Every token passed in must validate.** If one of them survives no
+   * strategy and no refresh replaces it, this throws
+   * {@link OidcTokenValidationError} rather than returning the other one's
+   * claims — a result whose `accessTokenClaims` is missing because the access
+   * token failed verification is indistinguishable from one where no access
+   * token was supplied, which would leave the caller treating a token nobody
+   * could validate as if it had been.
+   *
    * The caller must persist {@link ProcessTokensResult.refreshedTokens} when
    * {@link ProcessTokensResult.refreshed} is `true`.
    */
@@ -268,28 +416,36 @@ export async function createOidcCore(opts: OidcCoreOptions) {
       | undefined;
     let accessTokenValue: AccessTokenClaims;
     let idTokenValue: IdTokenClaims;
+    // Why the tokens of the *latest* attempt failed, for the error thrown at
+    // the end. Reset per attempt: once a refresh has replaced the token set,
+    // what the old one failed on says nothing about the new one.
+    let failures: TokenValidationFailure[] = [];
+
+    if (!currentAccessToken && !currentIdToken) {
+      throw new TypeError(
+        "processTokens needs an access token, an id token, or both — validating neither is meaningless",
+      );
+    }
 
     // At most two passes: the tokens as given, and — only once refreshed —
     // the new token set. `newTokens` itself guards against looping further.
     for (let attempt = 0; attempt < 2; attempt++) {
       accessTokenValue = undefined;
       idTokenValue = undefined;
+      failures = [];
       let expired = false;
-      // An audience mismatch is a permanent rejection, not a transient
-      // failure: no other strategy and no refresh can turn someone else's
-      // token into ours. Captured here rather than thrown inside the
-      // `.catch` below, which `Promise.allSettled` would swallow.
-      let fatal: OidcAudienceError | undefined;
+      // A token that names another client, or that isn't the kind of token it
+      // was presented as, is a permanent rejection rather than a transient
+      // failure: no other strategy and no refresh can turn it into ours.
+      // Captured here rather than thrown inside the `.catch` below, which
+      // `Promise.allSettled` would swallow.
+      let fatal: OidcTokenError | undefined;
       const onStrategyError =
         (kind: TokenKind, stage: string) => (err: unknown) => {
-          if (err instanceof OidcAudienceError) {
+          if (err instanceof OidcTokenError) {
             fatal ??= err;
             return;
           }
-          // jose owns the `aud` match now, so its rejection has to be mapped
-          // back onto the same permanent-failure path. `JWTExpired` does not
-          // extend `JWTClaimValidationFailed`, so the expiry branch below is
-          // unaffected by this.
           if (
             err instanceof errors.JWTClaimValidationFailed &&
             err.claim === "aud"
@@ -298,6 +454,7 @@ export async function createOidcCore(opts: OidcCoreOptions) {
             return;
           }
           if (err instanceof errors.JWTExpired) expired = true;
+          failures.push({ tokenKind: kind, stage, error: err });
           log.debug(
             `[oidc] ${kind} token ${stage} failed:`,
             (err as Error).message,
@@ -311,6 +468,12 @@ export async function createOidcCore(opts: OidcCoreOptions) {
           promises.push(
             jwtVerify(currentAccessToken, jwks, jwtVerifyOptions("access"))
               .then((result) => {
+                assertTokenTypeAfterJwtVerify(
+                  result.payload as AudienceClaims,
+                  result.protectedHeader,
+                  "access",
+                  tokenTypePolicy,
+                );
                 assertAudienceAfterJwtVerify(
                   result.payload as AudienceClaims,
                   "access",
@@ -325,6 +488,12 @@ export async function createOidcCore(opts: OidcCoreOptions) {
           promises.push(
             jwtVerify(currentIdToken, jwks, jwtVerifyOptions("id"))
               .then((result) => {
+                assertTokenTypeAfterJwtVerify(
+                  result.payload as AudienceClaims,
+                  result.protectedHeader,
+                  "id",
+                  tokenTypePolicy,
+                );
                 assertAudienceAfterJwtVerify(
                   result.payload as AudienceClaims,
                   "id",
@@ -359,6 +528,14 @@ export async function createOidcCore(opts: OidcCoreOptions) {
                   if (!result.active) {
                     throw new Error("access token is not active");
                   }
+                  // A response has no JWS header to pin `typ` against, but if
+                  // the AS echoed the claims of an ID token submitted here,
+                  // those still give it away.
+                  assertTokenTypeFromClaims(
+                    result as AudienceClaims,
+                    "access",
+                    tokenTypePolicy,
+                  );
                   // `active: true` only means "live at this AS", not "issued
                   // to you" — RFC 7662 §4 leaves that check to the caller.
                   assertTokenAudience(
@@ -378,7 +555,10 @@ export async function createOidcCore(opts: OidcCoreOptions) {
                   if (!result.active) throw new Error("id token is not active");
                   // An introspection response speaks RFC 7662 (`client_id`,
                   // `aud`), not ID-token vocabulary, whichever token was
-                  // introspected — so it gets the access-token policy.
+                  // introspected — so it gets the access-token policy. No
+                  // token-type check either: a response describing an ID token
+                  // may legitimately echo `nonce`/`at_hash`, and this is the
+                  // one slot where an ID token is what we asked for.
                   assertTokenAudience(
                     result as AudienceClaims,
                     "access",
@@ -392,50 +572,36 @@ export async function createOidcCore(opts: OidcCoreOptions) {
           await Promise.allSettled(promises);
           if (fatal) throw fatal;
         }
-
-        // Strategy 3: last resort, ask the UserInfo endpoint (works for
-        // identity claims even when neither local verification nor
-        // introspection are available for this issuer). Only meaningful with
-        // an access token.
-        if (currentAccessToken && (!accessTokenValue || !idTokenValue)) {
-          const userInfo = await fetchUserInfo(
-            config,
-            currentAccessToken,
-            "unknown",
-          ).catch((err) => {
-            log.debug(
-              "[oidc] UserInfo fallback failed:",
-              (err as Error).message,
-            );
-            return undefined;
-          });
-          // A UserInfo response carries no `aud`/`azp`, so it cannot be bound
-          // to this client — it only proves the AS still accepts the access
-          // token, not that the token was issued to us. When nothing else
-          // validated, that leaves the claims unbound; say so rather than
-          // letting it pass silently.
-          if (userInfo && !accessTokenValue) {
-            log.warn(
-              "[oidc] identity resolved from UserInfo alone: these claims are not bound to this client, since UserInfo responses carry no audience. Prefer an issuer with JWT access tokens or a reachable introspection endpoint.",
-            );
-          }
-          idTokenValue = userInfo;
-        }
       }
 
-      const gotSomething = !!accessTokenValue || !!idTokenValue;
-      const shouldRefresh =
-        !newTokens && !!refresh_token && (expired || !gotSomething);
+      // Every token still in play has to have validated. Anything less is
+      // worth a refresh, since a token set is refreshed as a whole: a stale or
+      // unverifiable access token alongside a good id token (or the reverse)
+      // is exactly what a refresh repairs.
+      const allValidated =
+        (!currentAccessToken || !!accessTokenValue) &&
+        (!currentIdToken || !!idTokenValue);
+      const shouldRefresh = !newTokens && !!refresh_token && !allValidated;
       if (!shouldRefresh) break;
 
       log.debug(
         expired
           ? "[oidc] token expired, refreshing directly..."
-          : "[oidc] every validation strategy failed, refreshing as a last resort...",
+          : "[oidc] a token could not be validated, refreshing as a last resort...",
       );
       newTokens = await refresh(refresh_token as string);
       currentAccessToken = newTokens.access_token;
       currentIdToken = newTokens.id_token;
+    }
+
+    // A token that reached here unvalidated is never silently dropped: the
+    // caller cannot tell a missing claim set from a rejected one, so anything
+    // still unaccounted for fails the whole call.
+    const unvalidated: TokenKind[] = [];
+    if (currentAccessToken && !accessTokenValue) unvalidated.push("access");
+    if (currentIdToken && !idTokenValue) unvalidated.push("id");
+    if (unvalidated.length) {
+      throw new OidcTokenValidationError(unvalidated, failures);
     }
 
     const accessSub = (accessTokenValue as { sub?: string } | undefined)?.sub;

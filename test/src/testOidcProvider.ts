@@ -39,6 +39,8 @@ export type TestOidcProvider = {
       expiresIn?: number;
       /** Omits `exp` entirely, for a token that never expires. */
       noExpiry?: boolean;
+      /** Sets the JWS `typ` header — e.g. `"at+jwt"` for an RFC 9068 access token. */
+      typ?: string;
     },
   ) => Promise<string>;
 };
@@ -228,6 +230,7 @@ export async function startTestOidcProvider(): Promise<TestOidcProvider> {
       audience?: string | string[];
       expiresIn?: number;
       noExpiry?: boolean;
+      typ?: string;
     },
   ): Promise<string> {
     const now = Math.floor(Date.now() / 1000);
@@ -235,7 +238,11 @@ export async function startTestOidcProvider(): Promise<TestOidcProvider> {
       ? (badPrivateKey as CryptoKey)
       : (privateKey as CryptoKey);
     const jwt = new SignJWT(claims)
-      .setProtectedHeader({ alg: "RS256", kid: opts?.badKid ? badKid : kid })
+      .setProtectedHeader({
+        alg: "RS256",
+        kid: opts?.badKid ? badKid : kid,
+        ...(opts?.typ ? { typ: opts.typ } : {}),
+      })
       .setIssuer(issuer)
       .setAudience(opts?.audience ?? clientId)
       .setSubject(claims.sub)

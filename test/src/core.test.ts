@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createOidcCore, type OidcCore } from "../../lib/core";
+import { OidcTokenValidationError } from "../../lib/errors";
+import { OidcTokenTypeError } from "../../lib/tokenType";
 import {
   startTestOidcProvider,
   type TestOidcProvider,
@@ -58,6 +60,20 @@ describe("startSignin", () => {
     expect(params.get("state")).toBe(result.state);
   });
 
+  test("sends a nonce, and carries it in the state for the callback to check", async () => {
+    const result = await core.startSignin({
+      redirectUri: idp.redirectUri,
+      returnTo: "/",
+    });
+
+    const nonce = result.authorizationUrl.searchParams.get("nonce");
+    expect(nonce).toBeTruthy();
+    // Stored in the state, so the caller has nothing extra to persist.
+    expect(JSON.parse(result.state).nonce).toBe(nonce);
+    // A value of its own, not a second use of the state's randomness.
+    expect(JSON.parse(result.state).random).not.toBe(nonce);
+  });
+
   test("accepts a custom scope", async () => {
     const result = await core.startSignin({
       redirectUri: idp.redirectUri,
@@ -75,6 +91,93 @@ describe("resolveSignin", () => {
     expect(result.returnTo).toBe("/dashboard");
     expect(result.tokens.access_token).toBeTruthy();
     expect(result.tokens.id_token).toBeTruthy();
+  });
+});
+
+describe("nonce", () => {
+  test("the issued ID token echoes the nonce that was sent", async () => {
+    const { codeVerifier, authorizationUrl, state } = await core.startSignin({
+      redirectUri: idp.redirectUri,
+      returnTo: "/",
+    });
+    const callbackUrl = await idp.runAuthorizationFlow(
+      authorizationUrl,
+      "user-nonce",
+    );
+    const { tokens } = await core.resolveSignin(
+      callbackUrl,
+      codeVerifier,
+      state,
+    );
+    expect(tokens.claims()?.nonce).toBe(JSON.parse(state).nonce);
+  });
+
+  test("rejects an ID token whose nonce is not the one we asked for", async () => {
+    const { codeVerifier, authorizationUrl, state } = await core.startSignin({
+      redirectUri: idp.redirectUri,
+      returnTo: "/",
+    });
+    // The authorization request goes out with someone else's nonce while our
+    // stored state still holds ours, so the ID token comes back bound to a
+    // request that was not this one.
+    authorizationUrl.searchParams.set("nonce", "not-the-nonce-we-stored");
+    const callbackUrl = await idp.runAuthorizationFlow(
+      authorizationUrl,
+      "user-nonce-mismatch",
+    );
+
+    // `openid-client` reports the failed comparison by code; it does not carry
+    // the claim name through, so that is the handle available to assert on.
+    const err = (await core
+      .resolveSignin(callbackUrl, codeVerifier, state)
+      .catch((e: unknown) => e)) as { code?: string };
+    expect(err.code).toBe("OAUTH_JWT_CLAIM_COMPARISON_FAILED");
+  });
+
+  test("rejects an ID token carrying no nonce when one was sent", async () => {
+    const { codeVerifier, authorizationUrl, state } = await core.startSignin({
+      redirectUri: idp.redirectUri,
+      returnTo: "/",
+    });
+    authorizationUrl.searchParams.delete("nonce");
+    const callbackUrl = await idp.runAuthorizationFlow(
+      authorizationUrl,
+      "user-nonce-absent",
+    );
+
+    // Sending a nonce makes the claim required, so an ID token without one is
+    // rejected as an invalid response rather than quietly accepted.
+    const err = (await core
+      .resolveSignin(callbackUrl, codeVerifier, state)
+      .catch((e: unknown) => e)) as { code?: string };
+    expect(err.code).toBe("OAUTH_INVALID_RESPONSE");
+  });
+
+  test("a login started before the nonce existed still completes", async () => {
+    // State from the previous release: no `nonce` field, and no nonce sent.
+    // The expectation has to follow the state, not the current code.
+    const legacyState = JSON.stringify({
+      visitedUrl: "/legacy",
+      random: "legacy-random",
+    });
+    const { codeVerifier, authorizationUrl } = await core.startSignin({
+      redirectUri: idp.redirectUri,
+      returnTo: "/ignored",
+    });
+    authorizationUrl.searchParams.set("state", legacyState);
+    authorizationUrl.searchParams.delete("nonce");
+
+    const callbackUrl = await idp.runAuthorizationFlow(
+      authorizationUrl,
+      "user-legacy-state",
+    );
+    const result = await core.resolveSignin(
+      callbackUrl,
+      codeVerifier,
+      legacyState,
+    );
+    expect(result.returnTo).toBe("/legacy");
+    expect(result.tokens.claims()?.nonce).toBeUndefined();
   });
 });
 
@@ -96,7 +199,7 @@ describe("processTokens", () => {
     expect(idp.calls.introspection).toBeGreaterThan(introspectionCallsBefore);
   });
 
-  test("shortcuts straight to refresh on an expired id token, skipping introspection/UserInfo", async () => {
+  test("shortcuts straight to refresh on an expired id token, skipping introspection", async () => {
     const { tokens } = await login(
       "user-2",
       "openid profile email offline_access",
@@ -116,8 +219,8 @@ describe("processTokens", () => {
     expect(result.refreshed).toBe(true);
     expect(result.refreshedTokens?.access_token).toBeTruthy();
     expect(result.user.sub).toBe("user-2");
-    // The shortcut skips introspection/UserInfo *for the stale expired
-    // token* — it does not exempt the fresh token set from validation.
+    // The shortcut skips introspection *for the stale expired token* — it
+    // does not exempt the fresh token set from validation.
     // oidc-provider's access tokens are opaque, so the new access token
     // still needs exactly one legitimate introspection call; if the
     // shortcut had NOT engaged, the stale token would have cost at least
@@ -161,6 +264,181 @@ describe("processTokens", () => {
         id_token: tokensB.id_token,
       }),
     ).rejects.toThrow("subject in access token and id token do not match");
+  });
+});
+
+describe("processTokens token-type binding", () => {
+  test("refuses an ID token presented as an access token, without spending the refresh token", async () => {
+    const { tokens } = await login(
+      "user-typeconfusion",
+      "openid profile email offline_access",
+    );
+
+    // A textbook ID token: signed by the issuer, `aud` and `azp` both this
+    // client, unexpired. Everything the access-token audience policy asks for
+    // — the substitution is only visible in the ID-token-only claims.
+    const idTokenAsAccessToken = await idp.sign({
+      sub: "user-typeconfusion",
+      azp: idp.clientId,
+      nonce: "n-0S6_WzA2Mj",
+      at_hash: "MTIzNDU2Nzg5MDEyMzQ1Ng",
+    });
+
+    const tokenCallsBefore = idp.calls.token;
+    const introspectionCallsBefore = idp.calls.introspection;
+
+    const rejection = core
+      .processTokens({
+        access_token: idTokenAsAccessToken,
+        refresh_token: tokens.refresh_token as string,
+      })
+      .catch((err: unknown) => err);
+
+    const err = (await rejection) as OidcTokenTypeError;
+    expect(err).toBeInstanceOf(OidcTokenTypeError);
+    expect(err.tokenKind).toBe("access");
+    expect(err.claim).toBe("nonce");
+
+    // A permanent rejection short-circuits the chain: no introspection round
+    // trip, and no refresh token spent on a token that can never be ours.
+    expect(idp.calls.token).toBe(tokenCallsBefore);
+    expect(idp.calls.introspection).toBe(introspectionCallsBefore);
+  });
+
+  test("refuses an RFC 9068 access token presented as an id token", async () => {
+    const accessTokenAsIdToken = await idp.sign(
+      { sub: "user-typ", azp: idp.clientId },
+      { typ: "at+jwt" },
+    );
+
+    const err = (await core
+      .processTokens({ id_token: accessTokenAsIdToken })
+      .catch((e: unknown) => e)) as OidcTokenTypeError;
+    expect(err).toBeInstanceOf(OidcTokenTypeError);
+    expect(err.tokenKind).toBe("id");
+    expect(err.claim).toBe("typ");
+  });
+
+  test("accepts a real token set, so the checks are not simply rejecting everything", async () => {
+    const { tokens } = await login("user-typ-ok");
+    const result = await core.processTokens({
+      access_token: tokens.access_token,
+      id_token: tokens.id_token,
+    });
+    expect(result.user.sub).toBe("user-typ-ok");
+  });
+});
+
+describe("processTokens rejects partially-validated token sets", () => {
+  test("throws when one supplied token validated and the other never could", async () => {
+    const { tokens } = await login("user-partial");
+    // Signed with a key the provider's JWKS doesn't have, so JWKS verification
+    // fails and introspection reports it inactive. The id token beside it is
+    // genuine — validating only that one would hand back a `user` while
+    // silently dropping an access token nobody could verify.
+    const forgedAccessToken = await idp.sign(
+      { sub: "user-partial", azp: idp.clientId },
+      { badKid: true },
+    );
+
+    const err = (await core
+      .processTokens({
+        access_token: forgedAccessToken,
+        id_token: tokens.id_token as string,
+      })
+      .catch((e: unknown) => e)) as OidcTokenValidationError;
+
+    expect(err).toBeInstanceOf(OidcTokenValidationError);
+    expect(err.tokenKinds).toEqual(["access"]);
+    // Every strategy that failed is reported, not just the last one.
+    expect(err.failures.map((failure) => failure.stage)).toEqual([
+      "JWT verification",
+      "introspection",
+    ]);
+    expect(err.message).toContain("access token JWT verification failed");
+    expect(err.cause).toBeDefined();
+  });
+
+  test("names both tokens when neither validated", async () => {
+    const badAccessToken = await idp.sign({ sub: "u" }, { badKid: true });
+    const badIdToken = await idp.sign({ sub: "u" }, { badKid: true });
+
+    const err = (await core
+      .processTokens({
+        access_token: badAccessToken,
+        id_token: badIdToken,
+      })
+      .catch((e: unknown) => e)) as OidcTokenValidationError;
+
+    expect(err).toBeInstanceOf(OidcTokenValidationError);
+    expect(err.tokenKinds).toEqual(["access", "id"]);
+    expect(err.message).toContain(
+      "could not validate the access and id tokens",
+    );
+  });
+
+  test("spends the refresh token to repair a partially-unvalidatable set", async () => {
+    const { tokens } = await login(
+      "user-partial-refresh",
+      "openid profile email offline_access",
+    );
+    const forgedAccessToken = await idp.sign(
+      { sub: "user-partial-refresh", azp: idp.clientId },
+      { badKid: true },
+    );
+
+    const result = await core.processTokens({
+      access_token: forgedAccessToken,
+      id_token: tokens.id_token as string,
+      refresh_token: tokens.refresh_token as string,
+    });
+
+    expect(result.refreshed).toBe(true);
+    expect(result.user.sub).toBe("user-partial-refresh");
+    expect(result.accessTokenClaims).toBeDefined();
+    expect(result.idTokenClaims).toBeDefined();
+  });
+
+  test("rejects a call carrying no tokens at all", async () => {
+    await expect(
+      // The types forbid this; a JS caller can still do it.
+      core.processTokens({} as { id_token: string }),
+    ).rejects.toThrow(TypeError);
+  });
+});
+
+describe("clockTolerance", () => {
+  test("applies the configured tolerance to expiry, in jose's duration grammar", async () => {
+    const tolerant = await createOidcCore({
+      issuer: idp.issuer,
+      clientId: idp.clientId,
+      clockTolerance: "5 minutes",
+      development: true,
+    });
+
+    // exp is 60s in the past: outside the 30s default, inside 5 minutes.
+    const staleIdToken = await idp.sign(
+      { sub: "user-skew", email: "user-skew@example.com" },
+      { expired: true },
+    );
+
+    const result = await tolerant.processTokens({ id_token: staleIdToken });
+    expect(result.user.sub).toBe("user-skew");
+
+    await expect(
+      core.processTokens({ id_token: staleIdToken }),
+    ).rejects.toThrow(OidcTokenValidationError);
+  });
+
+  test("refuses a tolerance openid-client could not accept", async () => {
+    await expect(
+      createOidcCore({
+        issuer: idp.issuer,
+        clientId: idp.clientId,
+        clockTolerance: "whenever",
+        development: true,
+      }),
+    ).rejects.toThrow(TypeError);
   });
 });
 

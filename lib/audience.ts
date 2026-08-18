@@ -16,8 +16,9 @@
  * jose never sees, i.e. RFC 7662 introspection responses.
  */
 
-/** Which policy applies to a given set of claims. */
-export type TokenKind = "access" | "id";
+import { OidcTokenError, type TokenKind } from "./errors";
+
+export type { TokenKind } from "./errors";
 
 /**
  * Claims a provider may use to name the client a token was issued to,
@@ -48,16 +49,10 @@ export type AudiencePolicy = {
  * validation fallback chain must not retry, try another strategy, or spend a
  * refresh token on it.
  */
-export class OidcAudienceError extends Error {
-  readonly tokenKind: TokenKind;
-  /** The claim that failed, for logging — `"aud"`, `"azp"`, `"cid"`, ... */
-  readonly claim: string;
-
+export class OidcAudienceError extends OidcTokenError {
   constructor(tokenKind: TokenKind, claim: string, message: string) {
-    super(message);
+    super(tokenKind, claim, message);
     this.name = "OidcAudienceError";
-    this.tokenKind = tokenKind;
-    this.claim = claim;
   }
 }
 
@@ -127,19 +122,35 @@ export function assertAudienceClaim(
 }
 
 /**
- * The half jose cannot do: which client the token was issued to.
+ * The half jose cannot do: binding a token to us, by whichever of the two
+ * available bindings the configuration makes possible.
  *
- * For ID tokens (OIDC Core 3.1.3.7): a present `azp` MUST equal the client
- * id, and a multi-party `aud` MUST carry an `azp` to disambiguate. Checking
- * `azp` whenever it is present is stricter than `oauth4webapi`, which only
- * consults it for multi-element `aud` — but no provider issues *you* a token
- * carrying someone else's `azp`, so there is nothing to lose.
+ * For ID tokens (OIDC Core 3.1.3.7): a present `azp` MUST equal the client id,
+ * and a multi-party `aud` MUST carry an `azp` to disambiguate. Checking `azp`
+ * whenever it is present is stricter than `oauth4webapi`, which only consults
+ * it for multi-element `aud` — but no provider issues *you* a token carrying
+ * someone else's `azp`, so there is nothing to lose.
  *
- * For access tokens: the first present
- * {@link AudiencePolicy.authorizedPartyClaims} claim MUST equal the client
- * id, and — the backstop — a token bindable to neither a client nor a
- * configured resource audience is rejected outright, since that is exactly
- * the cross-client replay case.
+ * For access tokens the two bindings answer different questions, and which
+ * one applies depends on {@link AudiencePolicy.expectedAudience}:
+ *
+ * - Configured: "was this token minted for me, the resource?" `aud` must
+ *   intersect it, and the authorized-party claim is *not* compared to the
+ *   client id — for a resource server the client that requested the token is
+ *   a different party by design, so requiring both rejects every ordinary
+ *   API/SPA split.
+ * - Not configured: "was this token issued to me, the client?" The first
+ *   present {@link AudiencePolicy.authorizedPartyClaims} claim MUST equal the
+ *   client id — the only binding available when a provider puts no resource
+ *   audience on access tokens at all.
+ *
+ * Note the asymmetry: a configured `expectedAudience` is not merely *one* way
+ * to pass. A token whose `aud` names some other resource stays rejected even
+ * when its `azp` is this client id, because that is the audience-confusion
+ * case — one resource server replaying a token at another — and the client
+ * binding says nothing about which resource the token was minted for.
+ *
+ * A token bindable neither way is rejected outright.
  */
 export function assertAuthorizedParty(
   claims: AudienceClaims,
@@ -171,6 +182,14 @@ export function assertAuthorizedParty(
     return;
   }
 
+  // A configured resource audience takes over the binding. The `aud` match is
+  // re-run rather than assumed to have happened in jose, so that this function
+  // is sound when called on its own.
+  if (expectedAudience?.length) {
+    assertAudienceClaim(claims, "access", policy);
+    return;
+  }
+
   const party = findAuthorizedParty(claims, authorizedPartyClaims);
   if (party) {
     if (party.value !== clientId) {
@@ -182,14 +201,11 @@ export function assertAuthorizedParty(
     }
     return;
   }
-
-  if (!expectedAudience?.length) {
-    throw new OidcAudienceError(
-      "access",
-      "aud",
-      `access token cannot be bound to this client: it carries none of the authorized-party claims (${authorizedPartyClaims.join(", ")}) and no "expectedAudience" is configured. Set "expectedAudience" to the value this resource server expects in "aud", extend "authorizedPartyClaims" with the claim your provider uses, or supply "verifyAudience".`,
-    );
-  }
+  throw new OidcAudienceError(
+    "access",
+    "aud",
+    `access token cannot be bound to this client: it carries none of the authorized-party claims (${authorizedPartyClaims.join(", ")}) and no "expectedAudience" is configured. Set "expectedAudience" to the value this resource server expects in "aud", extend "authorizedPartyClaims" with the claim your provider uses, or supply "verifyAudience".`,
+  );
 }
 
 /**

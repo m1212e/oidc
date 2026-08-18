@@ -205,6 +205,70 @@ describe("expectedAudience", () => {
     expect(result.user.sub).toBe("resource-user");
   });
 
+  test("accepts a resource-bound token that another client obtained", async () => {
+    // The ordinary API/SPA split: the orders API validates a token its own
+    // clientId did not request. Requiring `azp === clientId` on top of the
+    // audience match is what used to reject this.
+    const api = await createOidcCore({
+      issuer: idp.issuer,
+      clientId: "orders-api",
+      expectedAudience: "api://orders",
+      development: true,
+      logLevel: "silent",
+    });
+    const token = await idp.sign(
+      { sub: "spa-user", azp: "the-spa", scope: "orders.read" },
+      { audience: "api://orders" },
+    );
+
+    const result = await api.processTokens({ access_token: token });
+    expect(result.user.sub).toBe("spa-user");
+    expect(
+      (result.accessTokenClaims as { azp?: string } | undefined)?.azp,
+    ).toBe("the-spa");
+  });
+
+  test("a configured audience makes authorizedPartyClaims inert", async () => {
+    // `consumer_key` names a client that is not this one; the audience match
+    // is the binding, so it is never consulted.
+    const api = await createOidcCore({
+      issuer: idp.issuer,
+      clientId: "orders-api",
+      expectedAudience: "api://orders",
+      authorizedPartyClaims: ["consumer_key"],
+      development: true,
+      logLevel: "silent",
+    });
+    const token = await idp.sign(
+      { sub: "inert-user", consumer_key: "somebody-else" },
+      { audience: "api://orders" },
+    );
+    await expect(
+      api.processTokens({ access_token: token }),
+    ).resolves.toBeDefined();
+  });
+
+  test("still rejects a token minted for a different resource", async () => {
+    const api = await createOidcCore({
+      issuer: idp.issuer,
+      clientId: "orders-api",
+      expectedAudience: "api://orders",
+      development: true,
+      logLevel: "silent",
+    });
+    const token = await idp.sign(
+      { sub: "wrong-resource-user", azp: "the-spa" },
+      { audience: "api://billing" },
+    );
+
+    const err = await api
+      .processTokens({ access_token: token })
+      .then(() => undefined)
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(OidcAudienceError);
+    expect((err as OidcAudienceError).claim).toBe("aud");
+  });
+
   test("rejects a mismatched aud even when azp is correct", async () => {
     const bound = await createOidcCore({
       issuer: idp.issuer,

@@ -38,6 +38,19 @@ export function parseOIDCUser(value: unknown): OIDCUser {
 const OIDCFlowStateSchema = Type.Object({
   visitedUrl: Type.String(),
   random: Type.String(),
+  /**
+   * The OIDC `nonce` sent with the authorization request, to be compared
+   * against the ID token's `nonce` claim.
+   *
+   * Optional so that a login already in flight when this field was introduced
+   * still completes: state without one means no `nonce` was sent, which is
+   * also the expectation `resolveSignin` then passes on. It rides in the state
+   * rather than in a return value of its own because a nonce is not a secret —
+   * it is a public single-use value whose only job is to be echoed back — and
+   * the state is already the channel the caller must store and hand back
+   * unchanged. The `code_verifier`, which *is* a secret, is kept out of it.
+   */
+  nonce: Type.Optional(Type.String()),
 });
 export type OIDCFlowState = Static<typeof OIDCFlowStateSchema>;
 const CompiledOIDCFlowState = Compile(OIDCFlowStateSchema);

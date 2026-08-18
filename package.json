@@ -1,0 +1,49 @@
+{
+  "name": "@m1212e/oidc",
+  "module": "./out/index.mjs",
+  "version": "0.0.1",
+  "type": "module",
+  "repository": "https://github.com/m1212e/oidc",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "Apache-2.0",
+  "scripts": {
+    "format": "bun run lint",
+    "lint": "bunx biome check --write .",
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test:types": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.2",
+    "@types/bun": "^1.3.14",
+    "@types/node": "^26.1.0",
+    "@types/oidc-provider": "^9.11.1",
+    "lefthook": "^2.1.9",
+    "oidc-provider": "9.11.3",
+    "rolldown-plugin-dts": "^0.28.2",
+    "tsdown": "^0.22.3",
+    "typescript": "^7.0.2"
+  },
+  "peerDependencies": {
+    "typescript": "^4 || ^5 || ^6"
+  },
+  "dependencies": {
+    "jose": "^6.2.9",
+    "openid-client": "^6.8.5",
+    "typebox": "^1.1.38"
+  },
+  "main": "./out/index.cjs",
+  "types": "./out/index.d.cts",
+  "exports": {
+    ".": {
+      "import": "./out/index.mjs",
+      "require": "./out/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "inlinedDependencies": {
+    "oauth4webapi": "3.8.7"
+  }
+}

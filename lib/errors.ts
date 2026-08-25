@@ -1,15 +1,3 @@
-/**
- * The rejections this library raises, split by whether anything could ever
- * make the token acceptable.
- *
- * {@link OidcTokenError} is a *permanent* rejection: the token is not one this
- * client may accept, whatever else is true of it, so the validation fallback
- * chain must stop rather than try another strategy or spend a refresh token.
- * {@link OidcTokenValidationError} is the other end — it is only thrown once
- * every strategy has already run and a token the caller supplied still did not
- * validate.
- */
-
 import type {
   TokenEndpointResponse,
   TokenEndpointResponseHelpers,
@@ -22,22 +10,22 @@ export type TokenKind = "access" | "id";
 export type RefreshedTokenSet = TokenEndpointResponse &
   TokenEndpointResponseHelpers;
 
-/** Base class for every token rejection this library raises. */
+/**
+ * Base class for every error this library raises. Catch this to treat any
+ * rejection — a bad token, a failed grant, a stale OAuth state — as "this
+ * login/session needs to be redone", typically by answering 401 or restarting
+ * the flow.
+ */
 export class OidcError extends Error {
   /**
    * A token set minted while handling the call that went on to throw.
    *
-   * {@link OidcCore.processTokens} may spend the refresh token before a later
-   * check rejects the result. Wherever the provider rotates refresh tokens the
-   * one the caller passed in is dead from that moment on, so the replacement
-   * has to reach the caller even on the failure path — otherwise the session is
-   * unrecoverable, and on a provider with reuse detection retrying the old
-   * token revokes the entire grant.
-   *
-   * Persist it exactly as you would `ProcessTokensResult.refreshedTokens`, then
-   * handle the error as the rejection it is. Never set on
-   * {@link OidcSubjectError}: a set minted for a different subject is not one
-   * the caller may store.
+   * `processTokens` may spend the refresh token before a later check rejects
+   * the result; if the provider rotates refresh tokens, the one you passed in
+   * is already dead. Persist this exactly as you would a successful
+   * `refreshedTokens` result before handling the error, or the session becomes
+   * unrecoverable. Never set on {@link OidcSubjectError}, whose token set
+   * belongs to someone else and must not be stored.
    */
   refreshedTokens?: RefreshedTokenSet;
 
@@ -48,14 +36,13 @@ export class OidcError extends Error {
 }
 
 /**
- * A token this client must never accept: it names another client, or it is not
- * the kind of token it was presented as. Retrying cannot help, so the
- * validation fallback chain must not try another strategy or spend a refresh
- * token on it.
+ * A token this client must permanently refuse: it names another client, or
+ * isn't the kind of token it was presented as. The validation fallback chain
+ * stops on this rather than trying another strategy or spending a refresh.
  */
 export class OidcTokenError extends OidcError {
   readonly tokenKind: TokenKind;
-  /** The claim or header that failed, for logging — `"aud"`, `"azp"`, `"at_hash"`, `"typ"`, ... */
+  /** The claim or header that failed, for logging — `"aud"`, `"azp"`, `"typ"`, ... */
   readonly claim: string;
 
   constructor(tokenKind: TokenKind, claim: string, message: string) {
@@ -80,9 +67,9 @@ function describe(error: unknown): string {
 
 /**
  * A token the caller supplied could not be validated by any strategy, and no
- * refresh could replace it. Carries every failure that got it here, because
- * the individual strategies only log theirs at debug level — without this, an
- * unvalidatable token is a rejection with no stated cause.
+ * refresh could replace it. Carries every strategy's failure — each is only
+ * logged at debug level individually, so this is the one place a caller can
+ * see the full cause.
  */
 export class OidcTokenValidationError extends OidcError {
   /** The supplied tokens that never validated. */
@@ -117,13 +104,12 @@ export class OidcTokenValidationError extends OidcError {
 }
 
 /**
- * The tokens in play do not all describe the same user — either the access and
- * id token name different subjects, or a refresh replaced the set with one
- * belonging to somebody other than the tokens that were passed in.
+ * The tokens in play don't all describe the same user — the access and id
+ * token name different subjects, or a refresh returned a token set for
+ * someone other than the caller's session.
  *
- * Deliberately never carries {@link OidcError.refreshedTokens}: the set that
- * triggered this is not the caller's to persist, and storing it would swap the
- * session's identity for the one the mismatch was raised about.
+ * Never carries {@link OidcError.refreshedTokens}: a set minted for the wrong
+ * subject is not one the caller may persist.
  */
 export class OidcSubjectError extends OidcError {
   /** The subject the token set was bound to. */
@@ -140,19 +126,14 @@ export class OidcSubjectError extends OidcError {
 }
 
 /**
- * A token-endpoint exchange the provider refused, or that could not be made at
- * all: an expired authorization code, a `state` that did not match the one the
- * callback carried, a refresh token that has expired or been revoked, a
- * network fault.
+ * A token-endpoint exchange the provider refused, or that couldn't be made at
+ * all — an expired authorization code, a mismatched `state`, an expired or
+ * revoked refresh token, a network fault. The provider's own error is kept as
+ * `cause`.
  *
- * Exists so that the routine failures of an ordinary session stay inside this
- * hierarchy. An expired refresh token is the single most common thing
- * {@link OidcCore.processTokens} meets in production, and without this it
- * surfaced as `openid-client`'s own error — so a caller catching
- * {@link OidcError} to answer 401 answered 500 instead, to a user who only
- * needed to log in again.
- *
- * The provider's own error (`invalid_grant`, ...) is preserved as `cause`.
+ * Exists so ordinary session failures (an expired refresh token is the most
+ * common one in production) stay inside this error hierarchy instead of
+ * surfacing as `openid-client`'s own error type.
  */
 export class OidcGrantError extends OidcError {
   /** Which exchange failed. */
@@ -171,7 +152,7 @@ export class OidcGrantError extends OidcError {
 
 /**
  * The OAuth `state` this library round-trips could not be read back — a
- * truncated cookie, a value from another library, or one that was rewritten in
+ * truncated cookie, a value from another library, or one rewritten in
  * transit.
  */
 export class OidcStateError extends OidcError {
@@ -193,17 +174,8 @@ export class OidcClaimsError extends OidcError {
 }
 
 /**
- * A UserInfo request that failed, or whose response did not describe the
- * subject it was asked about.
- *
- * Exists for the same reason {@link OidcGrantError} does: a UserInfo call is a
- * network exchange with the provider, and its failures — an access token the
- * OP no longer accepts, a `sub` that does not match the one asserted — are
- * ordinary things for a live session to meet. Without this they surfaced as
- * `openid-client`'s own errors, so a caller catching {@link OidcError} to
- * answer 401 answered 500 instead.
- *
- * The provider's own error is preserved as `cause`.
+ * A UserInfo request that failed, or whose response didn't describe the
+ * subject it was asked about. The provider's own error is kept as `cause`.
  */
 export class OidcUserInfoError extends OidcError {
   constructor(message: string, options?: ErrorOptions) {
@@ -213,21 +185,12 @@ export class OidcUserInfoError extends OidcError {
 }
 
 /**
- * Hands a token set minted before `error` was raised back to the caller, when
- * the error is one that may carry it.
+ * Attaches a token set minted before `error` was raised, so a caller handling
+ * the rejection can still persist the refresh that already happened.
  *
- * Every rejection in this hierarchy may carry it *except*
- * {@link OidcSubjectError} — see {@link OidcError.refreshedTokens} for why that
- * one must not. The rule is deliberately "all but one" rather than a list of
- * permitted classes: the obligation exists because the refresh token has
- * already been spent, which is true regardless of what went wrong afterwards.
- * A narrower list silently dropped the replacement for the failures nobody
- * thought to enumerate — a provider shape surprise raising
- * {@link OidcClaimsError}, say — and a dropped replacement is an unrecoverable
- * session, since the token the caller still has on file is dead.
- *
- * Argument errors (`TypeError`) are excluded by construction: they are raised
- * before anything is spent.
+ * Skips {@link OidcSubjectError} — see {@link OidcError.refreshedTokens} —
+ * and applies to every other class by construction rather than an explicit
+ * list, so a future error type isn't silently excluded.
  */
 export function attachRefreshedTokens<E>(
   error: E,

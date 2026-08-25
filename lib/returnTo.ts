@@ -1,44 +1,34 @@
 /**
  * Post-login redirect validation.
  *
- * `returnTo` is the one value in this library's flow that starts life as
- * whatever the application had lying around — very often a query parameter
- * (`/login?next=...`) — travels through the IdP inside the OAuth `state`, and
- * comes back out of {@link OidcCore.resolveSignin} to be handed to a redirect.
- * That is the textbook open-redirect shape: a post-login redirect is the most
- * useful kind for phishing, because the victim arrives at the attacker's page
- * having just authenticated and expecting to land somewhere trusted.
+ * `returnTo` usually starts as attacker-influenced input (`/login?next=...`),
+ * travels through the IdP inside the OAuth `state`, and comes back out of
+ * `resolveSignin` to be redirected to — the textbook open-redirect shape,
+ * and an especially useful one for phishing since the victim arrives already
+ * authenticated. The `state` check doesn't help here: it protects against a
+ * *foreign* authorization response, not a value the app itself put inside it.
  *
- * The `state` check does not help. `state` protects against a *foreign*
- * authorization response being replayed at the callback; it says nothing about
- * a value the application itself put in there. Whatever went in comes back
- * intact, which is the entire point of it.
- *
- * So the value is validated where it enters ({@link OidcCore.startSignin}) and
- * again where it leaves ({@link OidcCore.resolveSignin}) — the second time
- * because a `state` may have been minted by an older version, by another
- * process with a different configuration, or by a caller that reached past
- * `startSignin`.
+ * So the value is validated on the way in (`startSignin`) and again on the
+ * way out (`resolveSignin`), since a stored `state` may predate this check or
+ * come from a caller that bypassed `startSignin`.
  *
  * The default policy is "a path on this site and nothing else". Cross-origin
- * landings need {@link OidcCoreOptions.allowedReturnToOrigins}, which is an
- * allowlist rather than a flag because "off" is not a coherent middle ground
- * here.
+ * landings need {@link OidcCoreOptions.allowedReturnToOrigins} — an allowlist
+ * rather than a flag, since "off" isn't a coherent middle ground here.
  */
 
 import { OidcError } from "./errors";
 
 /**
- * A relative `returnTo` is resolved against this to find out where it would
- * actually navigate. `.invalid` is reserved by RFC 2606 and can never resolve,
- * so nothing can be reached through it even if a value escapes.
+ * A relative `returnTo` is resolved against this to see where it would
+ * actually navigate. `.invalid` is reserved by RFC 2606 and can never
+ * resolve.
  */
 const PROBE_ORIGIN = "https://return-to.invalid";
 
 /**
- * Anything a browser would strip, normalize, or treat as a header break —
- * control characters (`\n`, `\r`, `\t`, NUL, ...), space and `DEL` — plus the
- * backslash, which a URL parser reads as a slash and which is therefore the
+ * Anything a browser would strip, normalize, or treat as a header break,
+ * plus the backslash — which a URL parser reads as a slash, making it the
  * quiet way to write `//evil.example`.
  */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: catching them is the point
@@ -46,9 +36,8 @@ const FORBIDDEN_CHARACTERS = /[\u0000-\u0020\u007f\\]/;
 
 /**
  * Thrown when a post-login redirect target is not one this configuration
- * permits. Raised by {@link OidcCore.startSignin} for a target the caller
- * supplied, and by {@link OidcCore.resolveSignin} for one that came back out
- * of the `state`.
+ * permits. Raised by `startSignin` for a caller-supplied target, and by
+ * `resolveSignin` for one read back out of the `state`.
  */
 export class OidcReturnToError extends OidcError {
   /** The rejected value, for logging. Never redirect to it. */
@@ -88,64 +77,51 @@ export function buildReturnToPolicy(opts: {
   return { allowedOrigins: origins };
 }
 
-/**
- * Returns `returnTo` unchanged if it is a target this policy permits, and
- * throws {@link OidcReturnToError} otherwise.
- *
- * A relative target must be a path beginning with a single `/`, and is checked
- * by resolving it and confirming it did not change origin — which is what
- * catches the forms that only *look* relative: `//evil.example`, and
- * `/\evil.example`, whose backslash the URL parser reads as a second slash.
- * Query and fragment are left alone; they cannot move the navigation.
- *
- * An absolute target must be an `http`/`https` URL without embedded
- * credentials, on an origin the allowlist names. The scheme is checked
- * separately from the origin because the two are not the same question:
- * `blob:` and `filesystem:` URLs report the origin of the URL *inside* them,
- * so an origin match alone would let one through.
- */
-export function assertSafeReturnTo(
-  returnTo: string,
-  policy: ReturnToPolicy,
-): string {
-  if (typeof returnTo !== "string" || returnTo.length === 0) {
-    throw new OidcReturnToError(
-      String(returnTo),
-      'invalid returnTo: expected a non-empty path such as "/dashboard"',
-    );
-  }
+function assertNoForbiddenCharacters(value: string): void {
+  const forbidden = FORBIDDEN_CHARACTERS.exec(value);
+  if (!forbidden) return;
+  throw new OidcReturnToError(
+    value,
+    `invalid returnTo ("${value}"): contains ${
+      forbidden[0] === "\\"
+        ? "a backslash, which a URL parser reads as a slash"
+        : `the character U+${value.codePointAt(forbidden.index)?.toString(16).padStart(4, "0").toUpperCase()}, which a browser would strip or refuse`
+    }`,
+  );
+}
 
-  const forbidden = FORBIDDEN_CHARACTERS.exec(returnTo);
-  if (forbidden) {
+/**
+ * A relative target must be a path beginning with a single `/`. Checked by
+ * resolving it against a probe origin and confirming the origin didn't
+ * change — which is what catches the forms that only *look* relative:
+ * `//evil.example`, and `/\evil.example` (backslash read as a second slash).
+ */
+function assertSafeRelativeReturnTo(returnTo: string): void {
+  let resolved: URL;
+  try {
+    resolved = new URL(returnTo, PROBE_ORIGIN);
+  } catch {
     throw new OidcReturnToError(
       returnTo,
-      `invalid returnTo ("${returnTo}"): contains ${
-        forbidden[0] === "\\"
-          ? "a backslash, which a URL parser reads as a slash"
-          : `the character U+${returnTo.codePointAt(forbidden.index)?.toString(16).padStart(4, "0").toUpperCase()}, which a browser would strip or refuse`
-      }`,
+      `invalid returnTo ("${returnTo}"): not a usable path`,
     );
   }
-
-  if (returnTo.startsWith("/")) {
-    let resolved: URL;
-    try {
-      resolved = new URL(returnTo, PROBE_ORIGIN);
-    } catch {
-      throw new OidcReturnToError(
-        returnTo,
-        `invalid returnTo ("${returnTo}"): not a usable path`,
-      );
-    }
-    if (resolved.origin !== PROBE_ORIGIN) {
-      throw new OidcReturnToError(
-        returnTo,
-        `refusing returnTo ("${returnTo}"): it looks relative but navigates to ${resolved.origin}. Only same-site paths are allowed unless the origin is listed in "allowedReturnToOrigins".`,
-      );
-    }
-    return returnTo;
+  if (resolved.origin !== PROBE_ORIGIN) {
+    throw new OidcReturnToError(
+      returnTo,
+      `refusing returnTo ("${returnTo}"): it looks relative but navigates to ${resolved.origin}. Only same-site paths are allowed unless the origin is listed in "allowedReturnToOrigins".`,
+    );
   }
+}
 
+/**
+ * An absolute target must be an `http`/`https` URL without embedded
+ * credentials, on an origin the allowlist names.
+ */
+function assertSafeAbsoluteReturnTo(
+  returnTo: string,
+  policy: ReturnToPolicy,
+): void {
   let absolute: URL;
   try {
     absolute = new URL(returnTo);
@@ -156,10 +132,9 @@ export function assertSafeReturnTo(
     );
   }
 
-  // Checked before the allowlist, because an origin is not the whole of a URL:
-  // `blob:https://app.example.com/…` reports the *inner* URL's origin, so a
-  // scheme that is not a navigation this policy means to permit would otherwise
-  // pass on the strength of an origin it only inherited.
+  // Checked before the allowlist: `blob:https://app.example.com/…` reports
+  // the *inner* URL's origin, so an origin match alone would pass a scheme
+  // this policy never meant to permit.
   if (absolute.protocol !== "https:" && absolute.protocol !== "http:") {
     throw new OidcReturnToError(
       returnTo,
@@ -176,42 +151,59 @@ export function assertSafeReturnTo(
     );
   }
 
-  // `https://app.example.com@evil.example` is already refused by the allowlist,
-  // which sees `evil.example` — but the reverse spelling of the same trick,
-  // credentials *on* an allowed origin, is a navigation no application means to
-  // hand a user, and it is refused for the app's own redirect URIs too. See
-  // {@link assertSafeRedirectUri}.
+  // The reverse of `user@evil.example` (already caught by the allowlist):
+  // credentials *on* an allowed origin still disguise the navigation.
   if (absolute.username || absolute.password) {
     throw new OidcReturnToError(
       returnTo,
       `refusing returnTo ("${returnTo}"): it embeds credentials, which disguise the origin it actually points at (${absolute.origin})`,
     );
   }
+}
 
+/**
+ * Validates a post-login redirect target against {@link ReturnToPolicy} and
+ * returns it unchanged, or throws {@link OidcReturnToError}.
+ *
+ * Accepts a same-site path (`"/dashboard"`) or, if listed in
+ * {@link OidcCoreOptions.allowedReturnToOrigins}, an absolute `http`/`https`
+ * URL. Call this on any `returnTo` value before using it — see
+ * {@link OidcCore.startSignin} and {@link OidcCore.resolveSignin} for where
+ * this library calls it.
+ */
+export function assertSafeReturnTo(
+  returnTo: string,
+  policy: ReturnToPolicy,
+): string {
+  if (typeof returnTo !== "string" || returnTo.length === 0) {
+    throw new OidcReturnToError(
+      String(returnTo),
+      'invalid returnTo: expected a non-empty path such as "/dashboard"',
+    );
+  }
+
+  assertNoForbiddenCharacters(returnTo);
+
+  if (returnTo.startsWith("/")) {
+    assertSafeRelativeReturnTo(returnTo);
+    return returnTo;
+  }
+
+  assertSafeAbsoluteReturnTo(returnTo, policy);
   return returnTo;
 }
 
 /**
- * Returns an absolute redirect URI unchanged if it is one a browser could
- * safely be sent to, and throws {@link OidcReturnToError} otherwise.
+ * Validates an absolute redirect URI — the app's own OAuth `redirect_uri` or
+ * RP-initiated logout `post_logout_redirect_uri` — and returns it unchanged,
+ * or throws {@link OidcReturnToError}.
  *
- * This is the weaker sibling of {@link assertSafeReturnTo}, for the two URIs
- * that are the *application's own* rather than a landing spot chosen per
- * request: the OAuth `redirect_uri` and the RP-initiated logout's
- * `post_logout_redirect_uri`. Both must be registered with the provider, which
- * is the check that decides where the user may actually end up, so there is no
- * origin allowlist here — requiring one would mean every caller had to list
- * their own callback origin in `allowedReturnToOrigins` to log anybody in.
- *
- * What is left is still worth refusing outright, because both values land in a
- * URL this library hands back for a redirect and neither is guaranteed to be a
- * constant in the calling app:
- *
- * - a scheme other than `http`/`https` — `javascript:`, `data:` — which some
- *   providers will echo back into a `Location` unvalidated,
- * - embedded credentials (`https://app.example.com@evil.example`), the classic
- *   way to make a foreign origin read as a familiar one,
- * - control characters and spaces, which are the header-splitting shapes.
+ * Weaker than {@link assertSafeReturnTo} on purpose: both values must be
+ * registered with the provider, which is what actually decides where the
+ * user can land, so there's no origin allowlist here. This only refuses what
+ * a provider might echo back unvalidated: non-http(s) schemes
+ * (`javascript:`, `data:`), embedded credentials, and control/space
+ * characters.
  */
 export function assertSafeRedirectUri(uri: string, label: string): string {
   if (typeof uri !== "string" || uri.length === 0) {

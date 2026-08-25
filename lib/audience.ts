@@ -1,19 +1,16 @@
 /**
  * Audience / authorized-party validation.
  *
- * `aud` answers "who is this token *for*", `azp` answers "who *asked* for it".
- * For ID tokens those are normally the same party, which is why OIDC Core
- * makes the `aud` check a MUST and the `azp` check only a SHOULD-when-present.
- * For access tokens they are routinely different, and the claim naming the
- * requesting client is not consistent across providers: RFC 9068 specifies
- * `client_id`, while Keycloak, Auth0 and Entra ID use `azp`, Okta uses `cid`,
- * and Entra v1 uses `appid`.
+ * `aud` answers "who is this token *for*", `azp` answers "who *asked* for
+ * it". For access tokens those are routinely different, and the claim naming
+ * the requesting client isn't consistent across providers (RFC 9068's
+ * `client_id`, Keycloak/Auth0/Entra's `azp`, Okta's `cid`, Entra v1's
+ * `appid`).
  *
- * Matching `aud` is generic JWT work, so it is delegated to jose's `audience`
- * option wherever a token actually passes through `jwtVerify` — see
- * {@link audienceVerifyOption}. What stays here is the part jose has no
- * concept of (`azp` appears nowhere in jose) plus the checks for claim sets
- * jose never sees, i.e. RFC 7662 introspection responses.
+ * Matching `aud` is generic JWT work, delegated to jose's `audience` option
+ * wherever a token passes through `jwtVerify` (see {@link audienceVerifyOption}).
+ * What stays here is the `azp` rule jose has no concept of, plus the checks
+ * needed for claim sets jose never sees — RFC 7662 introspection responses.
  */
 
 import { OidcTokenError, type TokenKind } from "./errors";
@@ -44,10 +41,9 @@ export type AudiencePolicy = {
 };
 
 /**
- * Thrown when a token cannot be bound to this client. Distinct from a
- * signature/expiry failure: this is a *permanent* rejection, so the
- * validation fallback chain must not retry, try another strategy, or spend a
- * refresh token on it.
+ * Thrown when a token cannot be bound to this client — a permanent
+ * rejection, so the validation fallback chain must not retry another
+ * strategy or spend a refresh token on it.
  */
 export class OidcAudienceError extends OidcTokenError {
   constructor(tokenKind: TokenKind, claim: string, message: string) {
@@ -65,15 +61,12 @@ function toAudienceList(aud: unknown): string[] {
 }
 
 /**
- * The first authorized-party claim the token actually carries, whatever its
- * shape.
+ * The first authorized-party claim the token actually carries.
  *
- * Deliberately not "the first claim carrying a usable string": a present but
- * malformed binding — `azp: ["other-client"]`, `client_id: ""` — must fail the
- * comparison rather than be stepped over in favour of the next claim name,
- * which is how a token gets bound by a claim its issuer did not intend as the
- * binding. `null` counts as absent, being how JSON spells a claim that is not
- * there.
+ * A present-but-malformed binding (`azp: ["other-client"]`, `client_id: ""`)
+ * must fail the comparison rather than fall through to the next claim name —
+ * otherwise a token gets bound by a claim its issuer never intended as the
+ * binding. `null` counts as absent, as JSON's way of spelling "not there".
  */
 function findAuthorizedParty(
   claims: AudienceClaims,
@@ -91,16 +84,14 @@ function findAuthorizedParty(
  * What to pass as jose's `audience` verification option, which also makes
  * `aud` presence required.
  *
- * An ID token's `aud` is always the client id, so that one is unconditional.
- * An access token's is only checked against an explicitly configured
- * `expectedAudience` — and is otherwise left unchecked on purpose. Stock
- * Keycloak issues access tokens with `aud: "account"` and the real client in
- * `azp`, so comparing an access token's `aud` to the client id would reject
+ * An access token's `aud` is only checked when {@link AudiencePolicy.expectedAudience}
+ * is set: stock Keycloak issues access tokens with `aud: "account"` and the
+ * real client in `azp`, so comparing against the client id here would reject
  * every default Keycloak deployment.
  *
- * Returns `undefined` when jose must not check `aud` at all — either because
- * nothing is configured, or because {@link AudiencePolicy.verifyAudience}
- * has taken over the whole policy.
+ * Returns `undefined` when jose must not check `aud` at all — nothing
+ * configured, or {@link AudiencePolicy.verifyAudience} replacing the whole
+ * policy.
  */
 export function audienceVerifyOption(
   policy: AudiencePolicy,
@@ -111,8 +102,8 @@ export function audienceVerifyOption(
 }
 
 /**
- * The `aud` matching that {@link audienceVerifyOption} would have handed to
- * jose. Only needed for claim sets that never pass through `jwtVerify`.
+ * The `aud` matching {@link audienceVerifyOption} would have handed to jose.
+ * Only needed for claim sets that never pass through `jwtVerify`.
  */
 export function assertAudienceClaim(
   claims: AudienceClaims,
@@ -134,35 +125,26 @@ export function assertAudienceClaim(
 }
 
 /**
- * The half jose cannot do: binding a token to us, by whichever of the two
+ * The half jose can't do: binding a token to us, by whichever of the two
  * available bindings the configuration makes possible.
  *
- * For ID tokens (OIDC Core 3.1.3.7): a present `azp` MUST equal the client id,
- * and a multi-party `aud` MUST carry an `azp` to disambiguate. Checking `azp`
- * whenever it is present is stricter than `oauth4webapi`, which only consults
- * it for multi-element `aud` — but no provider issues *you* a token carrying
- * someone else's `azp`, so there is nothing to lose.
+ * ID tokens (OIDC Core 3.1.3.7): a present `azp` MUST equal the client id,
+ * and a multi-party `aud` MUST carry an `azp` to disambiguate.
  *
- * For access tokens the two bindings answer different questions, and which
- * one applies depends on {@link AudiencePolicy.expectedAudience}:
- *
- * - Configured: "was this token minted for me, the resource?" `aud` must
- *   intersect it, and the authorized-party claim is *not* compared to the
- *   client id — for a resource server the client that requested the token is
- *   a different party by design, so requiring both rejects every ordinary
- *   API/SPA split.
- * - Not configured: "was this token issued to me, the client?" The first
+ * Access tokens ask a different question depending on
+ * {@link AudiencePolicy.expectedAudience}:
+ * - Configured: "was this token minted for me, the resource?" — `aud` must
+ *   intersect it. The authorized-party claim is *not* compared to the client
+ *   id, since for a resource server the requesting client is a different
+ *   party by design.
+ * - Not configured: "was this token issued to me, the client?" — the first
  *   present {@link AudiencePolicy.authorizedPartyClaims} claim MUST equal the
- *   client id — the only binding available when a provider puts no resource
- *   audience on access tokens at all.
+ *   client id.
  *
- * Note the asymmetry: a configured `expectedAudience` is not merely *one* way
- * to pass. A token whose `aud` names some other resource stays rejected even
- * when its `azp` is this client id, because that is the audience-confusion
- * case — one resource server replaying a token at another — and the client
- * binding says nothing about which resource the token was minted for.
- *
- * A token bindable neither way is rejected outright.
+ * A configured `expectedAudience` is not just one way to pass: a token whose
+ * `aud` names some other resource stays rejected even with a matching `azp`,
+ * because that's audience confusion — one resource server replaying a token
+ * meant for another.
  */
 export function assertAuthorizedParty(
   claims: AudienceClaims,
@@ -173,7 +155,6 @@ export function assertAuthorizedParty(
 
   if (tokenKind === "id") {
     const azp = claims.azp;
-    // `null` counts as absent, as it does for the access-token binding.
     if (azp !== undefined && azp !== null) {
       if (azp !== clientId) {
         throw new OidcAudienceError(
@@ -195,9 +176,8 @@ export function assertAuthorizedParty(
     return;
   }
 
-  // A configured resource audience takes over the binding. The `aud` match is
-  // re-run rather than assumed to have happened in jose, so that this function
-  // is sound when called on its own.
+  // Re-run rather than assumed already checked by jose, so this function is
+  // sound when called on its own (e.g. from an introspection response).
   if (expectedAudience?.length) {
     assertAudienceClaim(claims, "access", policy);
     return;
@@ -268,13 +248,12 @@ export function assertTokenAudience(
 /**
  * The policy to hold an *ID token's* introspection response to.
  *
- * Such a response speaks RFC 7662 vocabulary (`client_id`, `aud`) rather than
- * ID-token vocabulary, so it gets the access-token policy — but a configured
+ * Such a response speaks RFC 7662 vocabulary (`client_id`, `aud`), so it gets
+ * the access-token policy — but a configured
  * {@link AudiencePolicy.expectedAudience} names the resource this server
- * answers to, and an ID token's `aud` is the client id by definition. Matching
- * one against the other cannot succeed, so it would make an opaque ID token
- * unvalidatable for every deployment that sets `expectedAudience`. Dropping it
- * leaves the client binding, which is the check that belongs here anyway.
+ * answers to, and an ID token's `aud` is the client id by definition.
+ * Matching one against the other can never succeed, so it's dropped here,
+ * leaving just the client binding.
  */
 export function idTokenIntrospectionPolicy(
   policy: AudiencePolicy,
@@ -294,13 +273,9 @@ export function buildAudiencePolicy(opts: {
       ? [opts.expectedAudience]
       : (opts.expectedAudience ?? []);
 
-  // An entry that is not a usable audience value cannot be silently dropped.
-  // Dropping the only one turns the whole resource-audience binding off and
-  // falls back to comparing the authorized party to `clientId` — a different
-  // question, answered against a value the caller never configured — while the
-  // deployment looks like it pinned an audience. Dropping one of several
-  // narrows the set the caller asked for. Both are misconfigurations with no
-  // safe reading, so they are refused where they are declared.
+  // Dropping an invalid entry can't be done safely: dropping the only one
+  // silently falls back to the authorized-party binding while the deployment
+  // looks like it pinned an audience.
   const invalid = supplied.filter(
     (entry) => typeof entry !== "string" || entry.length === 0,
   );

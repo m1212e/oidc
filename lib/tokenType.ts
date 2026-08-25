@@ -2,42 +2,23 @@
  * Token-type binding: is this JWT — or this introspection response — the kind
  * of token it was presented as?
  *
- * Nothing in a JWT's signature says what the issuer minted it *for*. An ID
- * token and a JWT access token come off the same key, carry the same `iss`,
- * `sub` and `exp`, and — for the providers that put no resource audience on
- * access tokens, i.e. exactly the ones `expectedAudience` is documented as
- * unnecessary for — satisfy the same audience policy too. Left unchecked, an
- * ID token is therefore a usable bearer credential, which is the substitution
- * OAuth guidance is most emphatic about refusing: ID tokens are handed to
- * front ends, logged, and passed to third parties in ways access tokens are
- * not. The same goes for a *refresh* token, which is worse in one respect —
- * it typically outlives an access token by weeks.
+ * Nothing in a JWT's signature says what it was minted *for*. An ID token and
+ * a JWT access token come off the same key with the same `iss`/`sub`/`exp`,
+ * so left unchecked, an ID token (routinely handed to front ends, logged,
+ * passed to third parties) is a usable bearer credential — the exact
+ * substitution OAuth guidance warns against. A refresh token is worse: it
+ * typically outlives an access token by weeks.
  *
  * Three families of signal are checked, because no single one is universal:
+ * ID-token-only claims (`nonce`, `at_hash`, ...), claims that name the kind
+ * outright (`token_use`, the `typ` claim, `token_type`, `events`), and the
+ * `typ` JWS header (RFC 9068, though Keycloak/Auth0/Entra send a bare `"JWT"`
+ * on both kinds by default — see {@link TokenTypePolicy.accessTokenTyp}).
  *
- * - **ID-token-only claims.** `nonce`, `at_hash`, `c_hash` and `s_hash` are
- *   defined for ID tokens only (OIDC Core 3.1.3.6, 3.3.2.11). An access token
- *   has no nonce to echo and carries no hash of itself.
- * - **Claims that name the kind outright.** `token_use` (Cognito), the `typ`
- *   *claim* (Keycloak: `Bearer` / `ID` / `Refresh` / `Offline`), `token_type`
- *   in an RFC 7662 response, and an `events` claim, which makes an
- *   ID-token-shaped JWT a back-channel logout token instead (OIDC Back-Channel
- *   Logout 1.0 §2.4).
- * - **The `typ` JWS header.** RFC 9068 §2.1 gives JWT access tokens
- *   `at+jwt`, which is conclusive where a provider sets it — but Keycloak's
- *   header says `JWT` by default and so do Auth0's and Entra ID's, on both
- *   kinds, so it cannot be *required* by default. That is what
- *   {@link TokenTypePolicy.accessTokenTyp} is for. A header that does name a
- *   kind is nonetheless read in both slots, symmetrically: requiring one is a
- *   configuration decision, but believing one that names the *wrong* kind never
- *   was.
- *
- * Note the split between Keycloak's two `typ`s, which is easy to conflate:
- * the JWS **header** is `JWT` unless the RFC 9068 option is enabled, while the
- * value that actually names the kind — `Bearer`, `ID`, `Refresh` — is a
- * **claim** in the payload. The claim is checked automatically here;
- * {@link TokenTypePolicy.accessTokenTyp} pins the header and must never be set
- * to `"Bearer"` for Keycloak, because no Keycloak header ever says that.
+ * Keycloak has two different `typ`s, easy to conflate: the JWS **header** is
+ * `JWT` unless the RFC 9068 option is enabled, while the value naming the
+ * kind (`Bearer`/`ID`/`Refresh`) is a **claim**. The claim is always checked;
+ * `accessTokenTyp` pins the header and must never be `"Bearer"` for Keycloak.
  */
 
 import type { AudienceClaims } from "./audience";
@@ -59,28 +40,16 @@ const ACCESS_TOKEN_TYP = "application/at+jwt";
 
 /**
  * What a value naming a token's kind means, whether it arrives as a `typ`
- * claim (Keycloak), a `token_type` (RFC 7662 §2.2 / RFC 6749 §7.1), or a
- * `token_use` (Cognito). Compared after lowercasing; anything not listed is
- * *unknown* rather than wrong, so a provider spelling its own vocabulary here
- * is not rejected for it.
+ * claim (Keycloak), a `token_type` (RFC 7662/6749), or a `token_use`
+ * (Cognito). Compared after lowercasing; anything not listed is *unknown*
+ * rather than wrong, so a provider's own vocabulary here isn't rejected.
  *
- * `mac` and `n_a` earn their place by being real `token_type` values that
- * describe an access token without saying `bearer`.
+ * Keyed by the *bare* value (RFC 7515 §4.1.9 lets the `application/` prefix
+ * be omitted) so each kind isn't spelled twice.
  *
- * Keyed by the *bare* value: RFC 7515 §4.1.9 lets a media type omit its
- * `application/` prefix, so {@link namedKind} strips one before looking a value
- * up rather than every entry being spelled twice — a table that listed only
- * `at+jwt` and `application/id+jwt` would answer differently for two spellings
- * of the same type, which is a bypass rather than a gap.
- *
- * A `Map` rather than an object, because the key is a claim value straight out
- * of a token and therefore attacker-chosen: an object lookup would answer
- * `"constructor"` and `"__proto__"` from `Object.prototype` and report a
- * function or a prototype as this token's kind. Both spellings fail closed as
- * it happens — an unrecognized kind is not the presented one, so the token is
- * rejected either way — but "rejected because `Object.prototype.constructor`
- * is not `"access"`" is not a check, and the next claim read this way might not
- * be so lucky.
+ * A `Map`, not an object: the key comes straight out of a token and is
+ * therefore attacker-chosen, and an object lookup would answer
+ * `"constructor"`/`"__proto__"` from `Object.prototype`.
  */
 const NAMED_TOKEN_KINDS = new Map<string, TokenKind | "other">([
   ["access", "access"],
@@ -105,12 +74,8 @@ const NAMED_TOKEN_KINDS = new Map<string, TokenKind | "other">([
 
 /**
  * The kind a value names, or `undefined` if it names none this library knows.
- *
- * A single leading `application/` is stripped, because RFC 7515 §4.1.9 makes
- * `"at+jwt"` and `"application/at+jwt"` the same `typ` and a provider may send
- * either — so `"application/id+jwt"` in the access-token slot has to be the
- * same rejection as `"id+jwt"`. Only that one prefix, and only once: `foo/at+jwt`
- * and `application/application/at+jwt` are not the media type they resemble.
+ * Strips a single leading `application/` (RFC 7515 §4.1.9 media-type
+ * equivalence) before looking it up.
  */
 function namedKind(value: unknown): TokenKind | "other" | undefined {
   if (typeof value !== "string" || value.length === 0) return undefined;
@@ -122,9 +87,8 @@ function namedKind(value: unknown): TokenKind | "other" | undefined {
 }
 
 /**
- * jose's own `typ` normalization: RFC 7515 §4.1.9 lets the `application/`
- * prefix be omitted, so `"at+jwt"` and `"application/at+jwt"` have to compare
- * equal however a provider or a caller spells it.
+ * jose's own `typ` normalization, so `"at+jwt"` and `"application/at+jwt"`
+ * compare equal however a provider or caller spells it.
  */
 function normalizeTyp(typ: unknown): string | undefined {
   if (typeof typ !== "string" || typ.length === 0) return undefined;
@@ -133,10 +97,9 @@ function normalizeTyp(typ: unknown): string | undefined {
 }
 
 /**
- * Thrown when a token is not the kind of token it was presented as — an ID
- * token or a refresh token in the access-token slot, most importantly. A
- * permanent rejection: no other strategy and no refresh can turn one kind of
- * token into another.
+ * Thrown when a token is not the kind it was presented as — an ID or refresh
+ * token in the access-token slot, most importantly. A permanent rejection:
+ * no other strategy and no refresh can turn one kind of token into another.
  */
 export class OidcTokenTypeError extends OidcTokenError {
   constructor(tokenKind: TokenKind, claim: string, message: string) {
@@ -171,8 +134,8 @@ export function buildTokenTypePolicy(opts: {
 
 /**
  * The claim-level half of the policy — everything decidable without the JWS
- * header, and therefore the part an RFC 7662 introspection response can also
- * be held to.
+ * header, and therefore what an RFC 7662 introspection response can also be
+ * held to.
  */
 export function assertTokenTypeFromClaims(
   claims: AudienceClaims,
@@ -190,9 +153,8 @@ export function assertTokenTypeFromClaims(
     }
   }
 
-  // `typ` and `token_type` are only consulted when they name a kind this
-  // library recognizes: a provider putting something else there (Keycloak's
-  // registration tokens, or a plain `"JWT"`) says nothing either way.
+  // Only consulted when the value names a kind this library recognizes — a
+  // provider putting something else there (a plain "JWT") says nothing.
   for (const claim of ["token_use", "typ", "token_type"] as const) {
     const kind = namedKind(claims[claim]);
     if (kind === undefined || kind === tokenKind) continue;
@@ -207,12 +169,9 @@ export function assertTokenTypeFromClaims(
     );
   }
 
-  // Checked in both slots. A logout token is shaped like an ID token, so the
-  // id slot is the obvious place for one — but it also satisfies the
-  // access-token binding unchanged: same issuer, same `aud`, same `azp`, and
-  // nothing in `idTokenOnlyClaims` (a logout token must *not* carry a `nonce`,
-  // OIDC Back-Channel Logout 1.0 §2.4). `events` is what says it is neither
-  // kind, so it is not the id slot's business alone.
+  // Checked in both slots: a logout token is shaped like an ID token and
+  // satisfies the access-token binding too (same iss/aud/azp), so `events` —
+  // the claim that says it's neither — isn't the id slot's business alone.
   if (claims.events !== undefined) {
     throw new OidcTokenTypeError(
       tokenKind,
@@ -226,18 +185,12 @@ export function assertTokenTypeFromClaims(
 
 /**
  * The complete policy for a JWT jose has verified: the claim rules above plus
- * the `typ` rules, which need the protected header.
+ * the `typ` header rule.
  *
- * {@link TokenTypePolicy.accessTokenTyp} pins the header exactly where it is
- * configured. Where it is not — the default, because Auth0, Entra ID and stock
- * Keycloak all send a bare `"JWT"` on both kinds and so leave nothing to pin —
- * the header is still read for a value that names a kind *outright*, in both
- * slots and symmetrically: `typ` is the one header field a provider uses to say
- * what it minted, so a value naming another kind is the same substitution
- * {@link assertTokenTypeFromClaims} refuses, merely spelled in the header
- * instead of the payload. Values the vocabulary does not recognize — `"JWT"`
- * above all — say nothing either way and are left alone; that residual case is
- * what `accessTokenTyp` exists to close.
+ * {@link TokenTypePolicy.accessTokenTyp} pins the header exactly where
+ * configured. Where it isn't, the header is still read for a value naming a
+ * kind outright, in both slots symmetrically — believing a header that names
+ * the wrong kind is never a configuration choice, only requiring one is.
  */
 export function assertTokenTypeAfterJwtVerify(
   claims: AudienceClaims,
@@ -278,22 +231,12 @@ export function assertTokenTypeAfterJwtVerify(
 /**
  * The policy for an introspection response presented as an *access* token.
  *
- * `active: true` is not "this is an access token" — RFC 7662 has one endpoint
- * for every token type an AS issues, so a **refresh** token introspects just
- * as successfully, and it satisfies the audience policy identically (same
- * `sub`, same `client_id`) while typically outliving the access token by
- * weeks. A response has no JWS header to pin, so the only thing standing
- * between the two is what the response says it describes.
- *
- * `token_type` is defined (RFC 7662 §2.2) as the RFC 6749 §7.1 type, which
- * only an access token has: a compliant AS describing a refresh token has
- * nothing to put there. So an *absent* type is the refresh-token case in
- * practice — `oidc-provider` returns `token_type: "Bearer"` for access tokens
- * and omits it entirely for refresh tokens; Keycloak distinguishes them by the
- * `typ` claim it echoes. Requiring the affirmative answer is therefore the
- * check that closes the substitution, and
- * {@link TokenTypePolicy.requireIntrospectedTokenType} exists only for
- * providers that omit it on access tokens too.
+ * `active: true` only means the token is live at this AS, not that it's an
+ * access token — one endpoint answers for every token type, so a refresh
+ * token introspects just as successfully and satisfies the same audience
+ * checks. An absent `token_type` is in practice the refresh-token case (RFC
+ * 7662 §2.2 defines it only for tokens that have one), so requiring the
+ * affirmative answer is what closes the substitution.
  */
 export function assertIntrospectedAccessToken(
   claims: AudienceClaims,
@@ -312,28 +255,14 @@ export function assertIntrospectedAccessToken(
 }
 
 /**
- * The policy for an introspection response presented as an *ID* token.
+ * The mirror of {@link assertIntrospectedAccessToken} for an introspection
+ * response presented as an *ID* token — otherwise an access or refresh token
+ * introspects successfully in the `id_token` slot and authenticates the
+ * request just the same.
  *
- * The mirror of {@link assertIntrospectedAccessToken}, and needed for the same
- * reason: `active: true` says a token is live, not which kind it is, so without
- * this an access token — or, far worse, a **refresh** token — presented in the
- * `id_token` slot introspects successfully, satisfies the client binding
- * identically (same `sub`, same `client_id`) and authenticates the request.
- *
- * The claim rules are run for `"id"`, which checks only the claims that *name*
- * a kind (`typ: "Refresh"`, `token_use`, `token_type`) plus `events`. The
- * ID-token-only claims are deliberately not consulted — `assertTokenTypeFromClaims`
- * gates those behind the access-token slot — so a response echoing `nonce` or
- * `at_hash` is unaffected, which is what makes this safe to apply here.
- *
- * The affirmative requirement is stricter than the spec can justify on its own:
- * RFC 7662's `token_type` is the RFC 6749 §7.1 type, which an ID token does not
- * have, so a compliant AS has nothing standard to put there. It costs nothing
- * in practice because an ID token *is* a JWT by definition (OIDC Core 2), so
- * this path is only reached when local verification was impossible or failed —
- * and in that situation, a response that will not say what it describes is not
- * something to authenticate a user on. Providers that do answer here name the
- * kind: Keycloak echoes `typ: "ID"`, Cognito `token_use: "id"`.
+ * Runs the claim rules for `"id"`, which only checks the kind-naming claims
+ * plus `events` — the ID-token-only claims are gated behind the access-token
+ * slot, so a response echoing `nonce`/`at_hash` is unaffected.
  */
 export function assertIntrospectedIdToken(
   claims: AudienceClaims,

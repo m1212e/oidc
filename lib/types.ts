@@ -8,13 +8,12 @@ import { OidcClaimsError, OidcStateError } from "./errors";
 const nullable = <T extends TSchema>(t: T) =>
   Type.Optional(Type.Union([Type.Null(), t]));
 
-// Decode-only codec: normalizes case on the way in. Emails are never encoded
-// back out by this library, so an Encode side isn't needed.
+// Lowercases emails on the way in. No Encode side needed since this library
+// never writes emails back out.
 const LowercaseEmail = Decode(Type.String(), (s) => s.toLowerCase());
 
-// Several providers (older Keycloak, Salesforce, SAML bridges) send
-// `*_verified` as the string "true"/"1" rather than a boolean. Anything that
-// doesn't spell out truth decodes to `false` — the safe direction.
+// Some providers send `*_verified` as "true"/"1" instead of a boolean.
+// Anything that isn't clearly true decodes to false.
 const VerifiedFlag = Decode(
   Type.Union([Type.Boolean(), Type.String(), Type.Number()]),
   (value): boolean => {
@@ -28,34 +27,43 @@ const OIDCUserSchema = Type.Object({
   /**
    * The issuer that vouches for {@link OIDCUser.sub}.
    *
-   * `sub` is unique only *within* an issuer, and several providers mint ones
-   * that are trivially guessable across issuers (a numeric id, a username).
-   * An app keying accounts on `sub` alone across more than one IdP risks a
-   * collision that reads as account takeover. **Key accounts on `iss` *and*
-   * `sub`.**
-   *
-   * {@link OidcCore.processTokens} always sets this to the issuer the claims
-   * were actually verified against, not to whatever an `iss` claim said.
-   * Optional because {@link parseOIDCUser} also accepts claim sets with no
-   * issuer of their own, such as an unsigned UserInfo response.
+   * `sub` is only unique within one issuer, so key accounts on `iss` and
+   * `sub` together, not `sub` alone, if you support more than one IdP.
    */
   iss: Type.Optional(Type.String({ minLength: 1 })),
   sub: Type.String({ minLength: 1 }),
   email: nullable(LowercaseEmail),
   /**
-   * Whether the issuer vouches for {@link OIDCUser.email}. Absent means the
-   * issuer said nothing — treat that the same as `false`; only `true` means
-   * verified. Keying accounts on an unverified email is a standard
-   * account-takeover route.
+   * Whether the issuer vouches for {@link OIDCUser.email}. Treat a missing
+   * value the same as `false`. Only `true` means verified.
    */
   email_verified: nullable(VerifiedFlag),
-  preferred_username: nullable(Type.String()),
-  family_name: nullable(Type.String()),
+  name: nullable(Type.String()),
   given_name: nullable(Type.String()),
+  family_name: nullable(Type.String()),
+  middle_name: nullable(Type.String()),
+  nickname: nullable(Type.String()),
+  preferred_username: nullable(Type.String()),
+  profile: nullable(Type.String()),
+  picture: nullable(Type.String()),
+  website: nullable(Type.String()),
+  gender: nullable(Type.String()),
+  birthdate: nullable(Type.String()),
+  zoneinfo: nullable(Type.String()),
   locale: nullable(Type.String()),
-  /** OIDC Core 5.1 spells this `phone_number`; there is no `phone` claim. */
   phone_number: nullable(Type.String()),
   phone_number_verified: nullable(VerifiedFlag),
+  address: nullable(
+    Type.Object({
+      formatted: Type.Optional(Type.String()),
+      street_address: Type.Optional(Type.String()),
+      locality: Type.Optional(Type.String()),
+      region: Type.Optional(Type.String()),
+      postal_code: Type.Optional(Type.String()),
+      country: Type.Optional(Type.String()),
+    }),
+  ),
+  updated_at: nullable(Type.Number()),
 });
 export type OIDCUser = Static<typeof OIDCUserSchema>;
 const CompiledOIDCUser = Compile(OIDCUserSchema);
@@ -65,11 +73,10 @@ const OPTIONAL_USER_CLAIMS = Object.keys(USER_CLAIM_SCHEMAS).filter(
 );
 
 /**
- * Reads merged access/id token claims into an {@link OIDCUser}, stripping
- * everything not in that shape — issuers routinely carry extra, sometimes
- * sensitive, claims (roles, internal ids) that shouldn't leak into code that
- * only asked for "the user". Throws {@link OidcClaimsError} if `sub` is
- * missing or not a string; every other claim is simply dropped if malformed.
+ * Reads claims into an {@link OIDCUser}, dropping anything outside that
+ * shape (roles, internal ids, and other extra claims your provider sends).
+ * Throws {@link OidcClaimsError} if `sub` is missing or not a string. Any
+ * other malformed claim is just dropped.
  */
 export function parseOIDCUser(value: unknown): OIDCUser {
   const claims: Record<string, unknown> =
@@ -77,10 +84,8 @@ export function parseOIDCUser(value: unknown): OIDCUser {
       ? (value as Record<string, unknown>)
       : {};
 
-  // Matched against each claim's own schema *before* anything is decoded,
-  // rather than handing the whole object to TypeBox's `Decode` — that
-  // pipeline coerces on the way in (`sub: null` would arrive as `"null"`),
-  // and a silently coerced identity claim is worse than a dropped one.
+  // Checked against each claim's schema before decoding, so a bad value
+  // (e.g. `sub: null`) gets dropped instead of silently coerced.
   const candidate: Record<string, unknown> = { sub: claims.sub };
   for (const claim of OPTIONAL_USER_CLAIMS) {
     const supplied = claims[claim];
@@ -105,22 +110,16 @@ export function parseOIDCUser(value: unknown): OIDCUser {
 const OIDCFlowStateSchema = Type.Object({
   visitedUrl: Type.String(),
   random: Type.String(),
-  /**
-   * The OIDC `nonce` sent with the authorization request, compared against
-   * the ID token's `nonce` claim. Optional so a login already in flight when
-   * this field was introduced still completes.
-   */
+  /** The OIDC `nonce` sent with the authorization request. */
   nonce: Type.Optional(Type.String()),
 });
 export type OIDCFlowState = Static<typeof OIDCFlowStateSchema>;
 const CompiledOIDCFlowState = Compile(OIDCFlowStateSchema);
 
 /**
- * Reads back the OAuth `state` this library minted, from the value handed to
- * {@link OidcCore.resolveSignin}. Throws {@link OidcStateError} — never a bare
- * `SyntaxError` — for a value that isn't valid JSON or doesn't match the
- * shape {@link OidcCore.startSignin} produced, since a truncated cookie is an
- * ordinary thing to meet at a callback endpoint.
+ * Reads back the OAuth `state` this library minted. Throws
+ * {@link OidcStateError} if the value isn't valid JSON or doesn't match
+ * what {@link OidcCore.startSignin} produced.
  */
 export function parseOIDCFlowState(value: string): OIDCFlowState {
   let parsed: unknown;
@@ -132,8 +131,10 @@ export function parseOIDCFlowState(value: string): OIDCFlowState {
       { cause: err },
     );
   }
-  //TODO use decode instead of json parse
-  if (!CompiledOIDCFlowState.Check(parsed)) {
+  try {
+    // Clean first to strip stray extra properties. Decode alone won't.
+    return CompiledOIDCFlowState.Decode(CompiledOIDCFlowState.Clean(parsed));
+  } catch (err) {
     const [first] = [...CompiledOIDCFlowState.Errors(parsed)];
     throw new OidcStateError(
       `the stored OAuth state is not the shape startSignin produces: ${
@@ -141,11 +142,9 @@ export function parseOIDCFlowState(value: string): OIDCFlowState {
           ? `${first.instancePath || "/"} ${first.message}`
           : "unknown state shape"
       }`,
+      { cause: err },
     );
   }
-  return Value.Clean(OIDCFlowStateSchema, {
-    ...(parsed as OIDCFlowState),
-  }) as OIDCFlowState;
 }
 
 export type AccessTokenClaims = JWTPayload | IntrospectionResponse | undefined;
@@ -161,30 +160,19 @@ export type ValidationResult = {
   idTokenClaims: IdTokenClaims;
 };
 
-/**
- * Claim pairs in which one claim is the issuer vouching for the other. Order
- * is `[value, flag]`.
- */
+/** Claim/verified-flag pairs, as `[value, flag]`. */
 const VOUCHED_CLAIMS = [
   ["email", "email_verified"],
   ["phone_number", "phone_number_verified"],
 ] as const;
 
 /**
- * Merges the two validated claim sets into what {@link parseOIDCUser} reads,
- * with the ID token winning where both say something.
+ * Merges access and id token claims into what {@link parseOIDCUser} reads,
+ * with the id token winning where both set a value. Pass `onConflict` to be
+ * notified when both tokens disagree on the same claim.
  *
- * Merges per *claim* rather than spreading wholesale, because a verified flag
- * must never travel with a value from the other token. This matters for a
- * long-lived session: a user who changes their email gets a new,
- * *unverified* address in a fresh ID token, while an access token still on
- * file vouches for the old one — a plain spread would attach the stale
- * `email_verified: true` to the new address.
- *
- * A flag whose value didn't survive the merge is dropped rather than
- * inherited (reads as "issuer said nothing", the safe default). `onConflict`
- * reports when both tokens name a different value for the same claim, which
- * is worth surfacing regardless of how the merge resolves it.
+ * Merges claim by claim rather than spreading wholesale, so a verified flag
+ * never ends up attached to a value from the other token.
  */
 export function mergeTokenClaims(
   accessTokenClaims: Record<string, unknown> | undefined,
@@ -205,8 +193,7 @@ export function mergeTokenClaims(
       onConflict(value);
     }
 
-    // Whichever claim set supplied the value that survived the spread is the
-    // only one whose flag may be read as vouching for it.
+    // Only read the flag from whichever token's value actually survived.
     const source =
       id[value] !== undefined
         ? id

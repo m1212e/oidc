@@ -37,7 +37,11 @@ async function login(accountId: string, scope?: string) {
     authorizationUrl,
     accountId,
   );
-  return core.resolveSignin(callbackUrl, codeVerifier, state);
+  return core.resolveSignin({
+    callbackUrl,
+    codeVerifier,
+    expectedState: state,
+  });
 }
 
 describe("startSignin", () => {
@@ -104,11 +108,11 @@ describe("nonce", () => {
       authorizationUrl,
       "user-nonce",
     );
-    const { tokens } = await core.resolveSignin(
+    const { tokens } = await core.resolveSignin({
       callbackUrl,
       codeVerifier,
-      state,
-    );
+      expectedState: state,
+    });
     expect(tokens.claims()?.nonce).toBe(JSON.parse(state).nonce);
   });
 
@@ -130,7 +134,7 @@ describe("nonce", () => {
     // `instanceof OidcError` covers it; `openid-client` reports the failed
     // comparison by code, which rides along as the cause.
     const err = (await core
-      .resolveSignin(callbackUrl, codeVerifier, state)
+      .resolveSignin({ callbackUrl, codeVerifier, expectedState: state })
       .catch((e: unknown) => e)) as OidcGrantError;
     expect(err).toBeInstanceOf(OidcGrantError);
     expect(err.grant).toBe("authorization_code");
@@ -153,7 +157,7 @@ describe("nonce", () => {
     // Sending a nonce makes the claim required, so an ID token without one is
     // rejected as an invalid response rather than quietly accepted.
     const err = (await core
-      .resolveSignin(callbackUrl, codeVerifier, state)
+      .resolveSignin({ callbackUrl, codeVerifier, expectedState: state })
       .catch((e: unknown) => e)) as OidcGrantError;
     expect(err).toBeInstanceOf(OidcGrantError);
     expect((err.cause as { code?: string }).code).toBe(
@@ -179,11 +183,11 @@ describe("nonce", () => {
       authorizationUrl,
       "user-legacy-state",
     );
-    const result = await core.resolveSignin(
+    const result = await core.resolveSignin({
       callbackUrl,
       codeVerifier,
-      legacyState,
-    );
+      expectedState: legacyState,
+    });
     expect(result.returnTo).toBe("/legacy");
     expect(result.tokens.claims()?.nonce).toBeUndefined();
   });
@@ -441,6 +445,56 @@ describe("processTokens rejects partially-validated token sets", () => {
       core.processTokens({} as { id_token: string }),
     ).rejects.toThrow(TypeError);
   });
+
+  test("an omitted access token (undefined) is skipped, not an error", async () => {
+    const { tokens } = await login("user-access-token-omitted");
+    const result = await core.processTokens({
+      access_token: undefined,
+      id_token: tokens.id_token as string,
+    });
+    expect(result.accessTokenClaims).toBeUndefined();
+    expect(result.idTokenClaims).toBeDefined();
+  });
+
+  test("rejects a `null` access token even with a valid id token present", async () => {
+    const { tokens } = await login("user-access-token-null");
+    await expect(
+      core.processTokens({
+        access_token: null,
+        id_token: tokens.id_token as string,
+      }),
+    ).rejects.toThrow(TypeError);
+  });
+
+  test("rejects an empty-string access token even with a valid id token present", async () => {
+    const { tokens } = await login("user-access-token-empty");
+    await expect(
+      core.processTokens({
+        access_token: "",
+        id_token: tokens.id_token as string,
+      }),
+    ).rejects.toThrow(TypeError);
+  });
+
+  test("rejects a `null` id token even with a valid access token present", async () => {
+    const { tokens } = await login("user-id-token-null");
+    await expect(
+      core.processTokens({
+        access_token: tokens.access_token as string,
+        id_token: null,
+      }),
+    ).rejects.toThrow(TypeError);
+  });
+
+  test("rejects a `null` refresh token", async () => {
+    const { tokens } = await login("user-refresh-token-null");
+    await expect(
+      core.processTokens({
+        access_token: tokens.access_token as string,
+        refresh_token: null,
+      }),
+    ).rejects.toThrow(TypeError);
+  });
 });
 
 describe("clockTolerance", () => {
@@ -484,14 +538,18 @@ describe("refresh", () => {
       "user-refresh",
       "openid profile email offline_access",
     );
-    const refreshed = await core.refresh(tokens.refresh_token as string);
+    const refreshed = await core.refresh({
+      refreshToken: tokens.refresh_token as string,
+    });
     expect(refreshed.access_token).toBeTruthy();
   });
 });
 
 describe("getLogoutUrl", () => {
   test("builds an RP-initiated logout URL", async () => {
-    const url = await core.getLogoutUrl(idp.postLogoutRedirectUri);
+    const url = await core.getLogoutUrl({
+      postLogoutRedirectUri: idp.postLogoutRedirectUri,
+    });
     expect(url.origin).toBe(idp.issuer);
     expect(url.searchParams.get("post_logout_redirect_uri")).toBe(
       idp.postLogoutRedirectUri,
@@ -502,10 +560,10 @@ describe("getLogoutUrl", () => {
 describe("fetchUserInfoFromIssuer", () => {
   test("fetches claims from the real UserInfo endpoint", async () => {
     const { tokens } = await login("user-userinfo");
-    const info = await core.fetchUserInfoFromIssuer(
-      tokens.access_token as string,
-      "user-userinfo",
-    );
+    const info = await core.fetchUserInfoFromIssuer({
+      accessToken: tokens.access_token as string,
+      expectedSubject: "user-userinfo",
+    });
     expect(info.sub).toBe("user-userinfo");
   });
 });

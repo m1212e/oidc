@@ -50,7 +50,11 @@ async function login(accountId: string, scope?: string) {
     authorizationUrl,
     accountId,
   );
-  return core.resolveSignin(callbackUrl, codeVerifier, state);
+  return core.resolveSignin({
+    callbackUrl,
+    codeVerifier,
+    expectedState: state,
+  });
 }
 
 const OFFLINE = "openid profile email offline_access";
@@ -206,7 +210,9 @@ describe("a spent refresh token is never lost", () => {
     const { originalRefreshToken } = await spendThenFail();
     // Rotation already happened inside the failed call, so without the set
     // above the session would be unrecoverable.
-    await expect(core.refresh(originalRefreshToken)).rejects.toThrow();
+    await expect(
+      core.refresh({ refreshToken: originalRefreshToken }),
+    ).rejects.toThrow();
   });
 
   test("carries nothing when no refresh was attempted", async () => {
@@ -305,7 +311,11 @@ describe("returnTo through the real flow", () => {
     );
 
     await expect(
-      core.resolveSignin(callbackUrl, codeVerifier, hostileState),
+      core.resolveSignin({
+        callbackUrl,
+        codeVerifier,
+        expectedState: hostileState,
+      }),
     ).rejects.toThrow(OidcReturnToError);
   });
 
@@ -324,11 +334,11 @@ describe("returnTo through the real flow", () => {
       started.authorizationUrl,
       "user-cross-origin",
     );
-    const { returnTo } = await cross.resolveSignin(
+    const { returnTo } = await cross.resolveSignin({
       callbackUrl,
-      started.codeVerifier,
-      started.state,
-    );
+      codeVerifier: started.codeVerifier,
+      expectedState: started.state,
+    });
     expect(returnTo).toBe("https://app.example.com/dashboard");
   });
 });
@@ -336,7 +346,8 @@ describe("returnTo through the real flow", () => {
 describe("logout", () => {
   test("passes an id_token_hint so the OP knows which session to end", async () => {
     const { tokens } = await login("user-logout");
-    const url = await core.getLogoutUrl(idp.postLogoutRedirectUri, {
+    const url = await core.getLogoutUrl({
+      postLogoutRedirectUri: idp.postLogoutRedirectUri,
       idTokenHint: tokens.id_token as string,
       state: "back-to-home",
     });
@@ -354,7 +365,9 @@ describe("logout", () => {
   });
 
   test("still works with no hint at all", async () => {
-    const url = await core.getLogoutUrl(idp.postLogoutRedirectUri);
+    const url = await core.getLogoutUrl({
+      postLogoutRedirectUri: idp.postLogoutRedirectUri,
+    });
     expect(url.searchParams.has("id_token_hint")).toBe(false);
     expect(url.searchParams.get("post_logout_redirect_uri")).toBe(
       idp.postLogoutRedirectUri,
@@ -551,7 +564,7 @@ describe("token-endpoint failures stay inside the error hierarchy", () => {
 
   test("the same for a direct refresh call", async () => {
     const err = (await core
-      .refresh("not-a-refresh-token-at-all")
+      .refresh({ refreshToken: "not-a-refresh-token-at-all" })
       .catch((e: unknown) => e)) as OidcGrantError;
     expect(err).toBeInstanceOf(OidcGrantError);
     expect(err.grant).toBe("refresh_token");
@@ -561,18 +574,24 @@ describe("token-endpoint failures stay inside the error hierarchy", () => {
 describe("redirect URIs handed to the provider", () => {
   test("refuses a post-logout redirect that is not http(s)", async () => {
     await expect(
-      core.getLogoutUrl("javascript:alert(document.domain)"),
+      core.getLogoutUrl({
+        postLogoutRedirectUri: "javascript:alert(document.domain)",
+      }),
     ).rejects.toBeInstanceOf(OidcReturnToError);
   });
 
   test("refuses a post-logout redirect that disguises its origin", async () => {
     await expect(
-      core.getLogoutUrl("https://app.example.com@evil.example/goodbye"),
+      core.getLogoutUrl({
+        postLogoutRedirectUri: "https://app.example.com@evil.example/goodbye",
+      }),
     ).rejects.toBeInstanceOf(OidcReturnToError);
   });
 
   test("still builds the ordinary logout URL", async () => {
-    const url = await core.getLogoutUrl(idp.postLogoutRedirectUri);
+    const url = await core.getLogoutUrl({
+      postLogoutRedirectUri: idp.postLogoutRedirectUri,
+    });
     expect(url.searchParams.get("post_logout_redirect_uri")).toBe(
       idp.postLogoutRedirectUri,
     );
@@ -688,7 +707,8 @@ describe("a direct refresh can be bound to a subject too", () => {
     const { tokens } = await login("direct-refresh-owner", OFFLINE);
 
     await expect(
-      core.refresh(tokens.refresh_token as string, {
+      core.refresh({
+        refreshToken: tokens.refresh_token as string,
         expectedSubject: "somebody-else",
       }),
     ).rejects.toThrow(OidcSubjectError);
@@ -697,7 +717,8 @@ describe("a direct refresh can be bound to a subject too", () => {
   test("allows the subject it really belongs to", async () => {
     const { tokens } = await login("direct-refresh-owner-2", OFFLINE);
 
-    const refreshed = await core.refresh(tokens.refresh_token as string, {
+    const refreshed = await core.refresh({
+      refreshToken: tokens.refresh_token as string,
       expectedSubject: "direct-refresh-owner-2",
     });
 
@@ -707,7 +728,9 @@ describe("a direct refresh can be bound to a subject too", () => {
   test("still refreshes unchecked when no subject is asserted", async () => {
     const { tokens } = await login("direct-refresh-owner-3", OFFLINE);
 
-    const refreshed = await core.refresh(tokens.refresh_token as string);
+    const refreshed = await core.refresh({
+      refreshToken: tokens.refresh_token as string,
+    });
 
     expect(refreshed.access_token).toBeString();
   });
@@ -756,11 +779,19 @@ describe("PKCE is not silently skipped", () => {
     // callback. `openid-client` reads a falsy verifier as "no PKCE was used"
     // and omits `code_verifier` from the exchange entirely.
     await expect(
-      core.resolveSignin(callbackUrl, undefined as unknown as string, state),
+      core.resolveSignin({
+        callbackUrl,
+        codeVerifier: undefined as unknown as string,
+        expectedState: state,
+      }),
     ).rejects.toThrow(TypeError);
-    await expect(core.resolveSignin(callbackUrl, "", state)).rejects.toThrow(
-      TypeError,
-    );
+    await expect(
+      core.resolveSignin({
+        callbackUrl,
+        codeVerifier: "",
+        expectedState: state,
+      }),
+    ).rejects.toThrow(TypeError);
   });
 });
 
@@ -816,13 +847,19 @@ describe("construction and argument guards", () => {
 
   test("requires the subject a UserInfo response is to be checked against", async () => {
     await expect(
-      core.fetchUserInfoFromIssuer("some-token", ""),
+      core.fetchUserInfoFromIssuer({
+        accessToken: "some-token",
+        expectedSubject: "",
+      }),
     ).rejects.toThrow(TypeError);
   });
 
   test("reports a failed UserInfo call inside the error hierarchy", async () => {
     await expect(
-      core.fetchUserInfoFromIssuer("not-a-real-token", "some-subject"),
+      core.fetchUserInfoFromIssuer({
+        accessToken: "not-a-real-token",
+        expectedSubject: "some-subject",
+      }),
     ).rejects.toThrow(OidcUserInfoError);
   });
 });

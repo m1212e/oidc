@@ -11,21 +11,18 @@ export type RefreshedTokenSet = TokenEndpointResponse &
   TokenEndpointResponseHelpers;
 
 /**
- * Base class for every error this library raises. Catch this to treat any
- * rejection — a bad token, a failed grant, a stale OAuth state — as "this
- * login/session needs to be redone", typically by answering 401 or restarting
- * the flow.
+ * Base class for every error this library throws. Catch this to treat any
+ * failure (bad token, failed grant, stale OAuth state) as "this login or
+ * session needs to be redone": answer 401, or restart the flow.
  */
 export class OidcError extends Error {
   /**
-   * A token set minted while handling the call that went on to throw.
+   * A token set minted while handling the call that threw.
    *
-   * `processTokens` may spend the refresh token before a later check rejects
-   * the result; if the provider rotates refresh tokens, the one you passed in
-   * is already dead. Persist this exactly as you would a successful
-   * `refreshedTokens` result before handling the error, or the session becomes
-   * unrecoverable. Never set on {@link OidcSubjectError}, whose token set
-   * belongs to someone else and must not be stored.
+   * If your provider rotates refresh tokens, a failed call can still have
+   * spent the old one. Check this field and persist it just like a
+   * successful `refreshedTokens` result, or the session becomes stuck.
+   * Never set on {@link OidcSubjectError}.
    */
   refreshedTokens?: RefreshedTokenSet;
 
@@ -36,13 +33,12 @@ export class OidcError extends Error {
 }
 
 /**
- * A token this client must permanently refuse: it names another client, or
- * isn't the kind of token it was presented as. The validation fallback chain
- * stops on this rather than trying another strategy or spending a refresh.
+ * Thrown when a token names another client, or isn't the kind of token it
+ * claims to be. Treat this as a permanent rejection, not a retryable error.
  */
 export class OidcTokenError extends OidcError {
   readonly tokenKind: TokenKind;
-  /** The claim or header that failed, for logging — `"aud"`, `"azp"`, `"typ"`, ... */
+  /** The claim or header that failed, e.g. `"aud"`, `"azp"`, `"typ"`. */
   readonly claim: string;
 
   constructor(tokenKind: TokenKind, claim: string, message: string) {
@@ -56,7 +52,7 @@ export class OidcTokenError extends OidcError {
 /** One strategy's failure to validate one token, kept for diagnostics. */
 export type TokenValidationFailure = {
   tokenKind: TokenKind;
-  /** The strategy that failed — `"JWT verification"` or `"introspection"`. */
+  /** The strategy that failed: `"JWT verification"` or `"introspection"`. */
   stage: string;
   error: unknown;
 };
@@ -66,10 +62,9 @@ function describe(error: unknown): string {
 }
 
 /**
- * A token the caller supplied could not be validated by any strategy, and no
- * refresh could replace it. Carries every strategy's failure — each is only
- * logged at debug level individually, so this is the one place a caller can
- * see the full cause.
+ * Thrown when a supplied token couldn't be validated by any strategy and no
+ * refresh could replace it. `failures` lists what each strategy tried and
+ * why it failed, so you don't need to dig through debug logs to find out.
  */
 export class OidcTokenValidationError extends OidcError {
   /** The supplied tokens that never validated. */
@@ -104,12 +99,11 @@ export class OidcTokenValidationError extends OidcError {
 }
 
 /**
- * The tokens in play don't all describe the same user — the access and id
- * token name different subjects, or a refresh returned a token set for
- * someone other than the caller's session.
+ * Thrown when the access and id token name different subjects, or a refresh
+ * returned a token set for someone other than the caller's session.
  *
- * Never carries {@link OidcError.refreshedTokens}: a set minted for the wrong
- * subject is not one the caller may persist.
+ * Never carries {@link OidcError.refreshedTokens}: don't persist a token
+ * set minted for the wrong subject.
  */
 export class OidcSubjectError extends OidcError {
   /** The subject the token set was bound to. */
@@ -126,14 +120,9 @@ export class OidcSubjectError extends OidcError {
 }
 
 /**
- * A token-endpoint exchange the provider refused, or that couldn't be made at
- * all — an expired authorization code, a mismatched `state`, an expired or
- * revoked refresh token, a network fault. The provider's own error is kept as
- * `cause`.
- *
- * Exists so ordinary session failures (an expired refresh token is the most
- * common one in production) stay inside this error hierarchy instead of
- * surfacing as `openid-client`'s own error type.
+ * Thrown when a token-endpoint exchange was refused or failed to complete
+ * (expired authorization code, mismatched `state`, expired refresh token,
+ * network fault). The provider's own error is available as `cause`.
  */
 export class OidcGrantError extends OidcError {
   /** Which exchange failed. */
@@ -151,9 +140,9 @@ export class OidcGrantError extends OidcError {
 }
 
 /**
- * The OAuth `state` this library round-trips could not be read back — a
- * truncated cookie, a value from another library, or one rewritten in
- * transit.
+ * Thrown when the OAuth `state` this library round-trips can't be read back
+ * (a truncated cookie, a value from another library, one rewritten in
+ * transit).
  */
 export class OidcStateError extends OidcError {
   constructor(message: string, options?: ErrorOptions) {
@@ -163,8 +152,8 @@ export class OidcStateError extends OidcError {
 }
 
 /**
- * Validated claims could not be read as a user — most often a `sub` that is
- * absent (legal in an RFC 7662 introspection response) or not a string.
+ * Thrown when validated claims can't be read as a user, most often a
+ * missing or non-string `sub`.
  */
 export class OidcClaimsError extends OidcError {
   constructor(message: string, options?: ErrorOptions) {
@@ -174,8 +163,9 @@ export class OidcClaimsError extends OidcError {
 }
 
 /**
- * A UserInfo request that failed, or whose response didn't describe the
- * subject it was asked about. The provider's own error is kept as `cause`.
+ * Thrown when a UserInfo request failed, or its response didn't describe
+ * the subject it was asked about. The provider's own error is available as
+ * `cause`.
  */
 export class OidcUserInfoError extends OidcError {
   constructor(message: string, options?: ErrorOptions) {
@@ -185,12 +175,9 @@ export class OidcUserInfoError extends OidcError {
 }
 
 /**
- * Attaches a token set minted before `error` was raised, so a caller handling
- * the rejection can still persist the refresh that already happened.
- *
- * Skips {@link OidcSubjectError} — see {@link OidcError.refreshedTokens} —
- * and applies to every other class by construction rather than an explicit
- * list, so a future error type isn't silently excluded.
+ * Attaches a token set minted before `error` was thrown, so callers can
+ * still persist a refresh that already happened. Skips
+ * {@link OidcSubjectError}, see {@link OidcError.refreshedTokens}.
  */
 export function attachRefreshedTokens<E>(
   error: E,

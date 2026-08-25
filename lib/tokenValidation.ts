@@ -1,9 +1,6 @@
 /**
- * The two offline-first validation strategies `processTokens` falls back
- * through: local JWKS verification, then remote introspection. Split out of
- * `core.ts` so each strategy can be read (and reasoned about) on its own —
- * both report through the same shape so `processTokens` can treat them
- * identically.
+ * The two validation strategies `processTokens` falls back through: local
+ * JWKS verification, then remote introspection.
  */
 
 import {
@@ -36,17 +33,10 @@ import {
 } from "./tokenType";
 import type { AccessTokenClaims, IdTokenClaims } from "./types";
 
-/** Three base64url segments — the compact JWS serialization, shape only. */
+/** Three base64url segments: the shape of a compact JWS, nothing more. */
 const JWS_COMPACT = /^[\w-]+\.[\w-]*\.[\w-]+$/;
 
-/**
- * Whether a token is a JWT at all, as opposed to an opaque handle.
- *
- * Decides whether introspection has anything to add: a JWT the issuer's own
- * JWKS couldn't verify won't be rehabilitated by asking the AS about it — a
- * spec-compliant server answers `unsupported_token_type` for structured
- * tokens — so that round trip is pure cost, and cost an attacker controls.
- */
+/** Whether a token is a JWT at all, as opposed to an opaque handle. */
 export function looksLikeJwt(token: string): boolean {
   if (!JWS_COMPACT.test(token)) return false;
   try {
@@ -62,11 +52,9 @@ export function subjectOf(claims: unknown): string | undefined {
 }
 
 /**
- * The `sub` a supplied JWT names, read without verifying anything.
- *
- * Sound only because of how it's used: as an *additional constraint* on what
- * a refresh may return, never as grounds for accepting anything — a forged
- * value can only make the later check stricter.
+ * The `sub` a supplied JWT names, read without verifying anything. Used
+ * only as an extra constraint on what a refresh may return, never to
+ * accept a token on its own.
  */
 export function unverifiedSubject(token?: string): string | undefined {
   if (!token || !looksLikeJwt(token)) return undefined;
@@ -78,9 +66,8 @@ export function unverifiedSubject(token?: string): string | undefined {
 }
 
 /**
- * Collects the outcome of running one validation strategy across both token
- * slots, distinguishing a permanent rejection (`fatal`) from an ordinary
- * failure that another strategy or a refresh might still resolve.
+ * Collects the outcome of running one validation strategy across both
+ * token slots.
  */
 class StrategyOutcome {
   accessTokenValue: AccessTokenClaims;
@@ -92,10 +79,8 @@ class StrategyOutcome {
   constructor(private log: Logger) {}
 
   /**
-   * A token that names another client, or isn't the kind it was presented
-   * as, is a permanent rejection — no other strategy and no refresh can turn
-   * it into ours. Captured here rather than thrown directly, since
-   * `Promise.allSettled` would otherwise swallow it.
+   * Captures a permanent rejection (wrong client, wrong token kind) rather
+   * than throwing directly, since `Promise.allSettled` would swallow it.
    */
   onError(kind: TokenKind, stage: string) {
     return (err: unknown) => {
@@ -122,11 +107,8 @@ class StrategyOutcome {
 
 /**
  * Strategy 1: verify both tokens locally against the issuer's JWKS.
- *
- * A JWKS-detected expiry is reported via `expired` so `processTokens` can
- * skip straight to a refresh instead of also trying introspection, which
- * would either fail the same way or waste a round trip on a token that's
- * simply stale.
+ * Reports expiry via `expired` so `processTokens` can skip straight to a
+ * refresh instead of also trying introspection.
  */
 export async function verifyTokensLocally(
   jwks: Parameters<typeof jwtVerify>[1],
@@ -188,12 +170,6 @@ export async function verifyTokensLocally(
 /**
  * Strategy 2: fall back to remote introspection for whichever token local
  * verification couldn't validate.
- *
- * An introspection response speaks RFC 7662 vocabulary regardless of which
- * slot it was requested for, so the id slot is checked with the access-token
- * audience policy minus the resource audience (see
- * `idTokenIntrospectionPolicy`) — an ID token's `aud` could never match a
- * configured resource audience.
  */
 export async function introspectTokens(
   config: Configuration,
@@ -212,14 +188,10 @@ export async function introspectTokens(
       tokenIntrospection(config, tokens.access)
         .then((result) => {
           if (!result.active) throw new Error("access token is not active");
-          // `active: true` says the token is live — not that it's an
-          // *access* token, and not that it's ours. Both are established
-          // separately since one endpoint answers for every token type.
           assertIntrospectedAccessToken(
             result as AudienceClaims,
             tokenTypePolicy,
           );
-          // RFC 7662 §4 leaves the "issued to you" half to the caller.
           assertTokenAudience(
             result as AudienceClaims,
             "access",

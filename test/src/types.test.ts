@@ -31,6 +31,41 @@ describe("parseOIDCUser", () => {
     expect(user.preferred_username).toBe("jdoe");
   });
 
+  test("keeps the remaining standard claims", () => {
+    const user = parseOIDCUser({
+      sub: "abc123",
+      name: "Jane Doe",
+      middle_name: "Q",
+      nickname: "Janie",
+      profile: "https://example.com/jane",
+      picture: "https://example.com/jane.jpg",
+      website: "https://example.com",
+      gender: "female",
+      birthdate: "1990-01-01",
+      zoneinfo: "Europe/Berlin",
+      address: {
+        formatted: "123 Main St, Springfield",
+        locality: "Springfield",
+        country: "US",
+      },
+      updated_at: 1700000000,
+    });
+
+    expect(user.name).toBe("Jane Doe");
+    expect(user.middle_name).toBe("Q");
+    expect(user.nickname).toBe("Janie");
+    expect(user.profile).toBe("https://example.com/jane");
+    expect(user.picture).toBe("https://example.com/jane.jpg");
+    expect(user.website).toBe("https://example.com");
+    expect(user.gender).toBe("female");
+    expect(user.birthdate).toBe("1990-01-01");
+    expect(user.zoneinfo).toBe("Europe/Berlin");
+    expect(user.address?.formatted).toBe("123 Main St, Springfield");
+    expect(user.address?.locality).toBe("Springfield");
+    expect(user.address?.country).toBe("US");
+    expect(user.updated_at).toBe(1700000000);
+  });
+
   test("strips claims not in the schema", () => {
     const user = parseOIDCUser({
       sub: "abc123",

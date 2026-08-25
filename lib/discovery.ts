@@ -1,21 +1,14 @@
 /**
- * Issuer-discovery helpers: settling, once at construction time, the things
- * about a provider that have to hold before any token exchange is trusted —
- * that its signing keys can be fetched without a network attacker swapping
- * them, that the metadata document actually describes the issuer that was
- * asked for, and that it will honour the PKCE challenge every authorization
- * request carries. All three fail silently if left unchecked, which is why
- * they're refused at construction rather than surfacing later as a forged
- * token or a hijacked code.
+ * Issuer-discovery helpers used internally by `createOidcCore` to validate
+ * a provider's metadata at startup.
  */
 
+import type { Configuration } from "openid-client";
 import type { Logger } from "./logger";
 
 /**
- * Resolves {@link OidcCoreOptions.development} against the environment when
- * not passed explicitly. Only an exact `NODE_ENV=development` enables it —
- * an unset `NODE_ENV` must fail closed, since guessing wrong here means
- * silently permitting plain-HTTP traffic to the IdP in production.
+ * Resolves {@link OidcCoreOptions.development} from `NODE_ENV` when not
+ * passed explicitly. Only `NODE_ENV=development` turns it on.
  */
 export function resolveDevelopment(development?: boolean): boolean {
   if (development !== undefined) return development;
@@ -24,10 +17,8 @@ export function resolveDevelopment(development?: boolean): boolean {
 }
 
 /**
- * Accepted when the issuer advertises no
- * `id_token_signing_alg_values_supported` (REQUIRED by OIDC discovery, but
- * not by plain OAuth AS metadata). Asymmetric only — a symmetric `alg`
- * verified against a JWKS key is the algorithm-confusion shape.
+ * Fallback signing algorithms used when the issuer advertises none.
+ * Asymmetric only, since offline verification uses a public JWKS key.
  */
 export const DEFAULT_SIGNING_ALGORITHMS: readonly string[] = [
   "RS256",
@@ -44,21 +35,12 @@ export const DEFAULT_SIGNING_ALGORITHMS: readonly string[] = [
   "Ed25519",
 ];
 
-/** Whether an `alg` is one a public key from a JWKS can verify. */
+/** Whether an `alg` is one a public JWKS key can verify. */
 export function isAsymmetricAlgorithm(alg: string): boolean {
   return /^(RS|PS|ES|Ed)/.test(alg);
 }
 
-/**
- * Refuses the issuer's `jwks_uri` unless it can be fetched safely.
- *
- * `openid-client` holds every request it makes to https except in
- * {@link OidcCoreOptions.development}, but the JWKS fetch goes through jose's
- * `createRemoteJWKSet`, which has no such switch and will fetch plain HTTP
- * without complaint. That fetch decides whether a signature verifies, so
- * serving it over plain HTTP is one MITM key substitution away from forged
- * tokens for any subject.
- */
+/** Rejects the issuer's `jwks_uri` unless it can be fetched safely. */
 export function resolveJwksUri(jwksUri: string, development: boolean): URL {
   let url: URL;
   try {
@@ -75,7 +57,7 @@ export function resolveJwksUri(jwksUri: string, development: boolean): URL {
   );
 }
 
-/** Hosts `openid-client` deliberately exempts from its own issuer comparison. */
+/** Hosts `openid-client` exempts from its own issuer comparison. */
 function issuerMatchExempt(url: URL): boolean {
   return (
     url.origin === "https://login.microsoftonline.com" ||
@@ -86,28 +68,7 @@ function issuerMatchExempt(url: URL): boolean {
 const WELL_KNOWN = "/.well-known/";
 const withoutTrailingSlash = (value: string) => value.replace(/\/+$/, "");
 
-/**
- * Confirms the metadata document names the issuer that was actually asked
- * for.
- *
- * `openid-client` performs this comparison itself, but only when it had to
- * *derive* the metadata URL from an issuer identifier. If `issuer` already
- * contains `/.well-known/` — an entirely ordinary way to configure a client —
- * it takes the document's word instead, which turns {@link OidcCoreOptions.issuer}
- * from a pin into a hint: the `iss` every token is checked against, the
- * `jwks_uri`, and the token endpoint all become whatever the document said. A
- * document naming a foreign issuer would otherwise be accepted in full.
- *
- * The well-known path is either *appended* to the issuer (OIDC Discovery 1.0
- * §4) or *inserted* after the host (RFC 8414 §3.1). The appended form spells
- * the issuer out, so it's compared exactly. The inserted form can't be
- * reversed — the boundary between the well-known name and the issuer path
- * isn't recoverable — so it falls back to requiring the same origin.
- *
- * `login.microsoftonline.com` and `*.b2clogin.com` get the origin check too,
- * mirroring `openid-client`'s own exemption: Entra ID's `/common` and
- * `/organizations` documents answer with a literal `{tenantid}` placeholder.
- */
+/** Confirms the metadata document names the issuer that was actually asked for. */
 export function assertDiscoveredIssuer(
   configured: string,
   discovered: string,
@@ -116,18 +77,12 @@ export function assertDiscoveredIssuer(
   try {
     configuredUrl = new URL(configured);
   } catch {
-    // Only reachable by calling this helper directly with a non-URL —
-    // `createOidcCore` always parses `issuer` into a URL before discovery
-    // runs, and a value that isn't a URL carries no `.well-known` to decide
-    // anything from.
     return;
   }
 
   const path = configuredUrl.origin + configuredUrl.pathname;
   const wellKnownAt = path.indexOf(WELL_KNOWN);
-  // No well-known segment means `openid-client` already compared them,
-  // exactly, exemptions included — re-running that here would only get the
-  // exempted hosts wrong.
+  // No well-known segment: `openid-client` already did this comparison.
   if (wellKnownAt === -1) return;
 
   const suffix = withoutTrailingSlash(
@@ -143,10 +98,6 @@ export function assertDiscoveredIssuer(
     );
   }
 
-  // The inserted form has only an origin to compare, so the document's
-  // issuer has to be a URL for there to be a comparison at all — stepping
-  // over an unparseable one would leave nothing holding the document to the
-  // provider it was fetched from.
   let discoveredUrl: URL;
   try {
     discoveredUrl = new URL(discovered);
@@ -162,21 +113,7 @@ export function assertDiscoveredIssuer(
   );
 }
 
-/**
- * Refuses an issuer that cannot honour the PKCE challenge
- * {@link OidcCore.startSignin} sends.
- *
- * For a public client (no `clientSecret`), PKCE is the *only* thing
- * protecting the token endpoint from a leaked authorization code. An AS that
- * doesn't understand `code_challenge` ignores it silently and answers the
- * exchange normally, so an issuer that doesn't list `S256` is refused
- * outright — `plain` is not a fallback, since a challenge equal to the
- * verifier defends against nothing.
- *
- * An absent `code_challenge_methods_supported` only warns: RFC 8414 reads
- * that as "no PKCE", but several providers that do support it (Cognito among
- * them) omit the field regardless, and there's no caller-side fix for that.
- */
+/** Rejects an issuer that cannot honour the PKCE challenge {@link OidcCore.startSignin} sends. */
 export function assertPkceSupported(
   methods: string[] | undefined,
   clientSecret: string | undefined,
@@ -197,7 +134,7 @@ export function assertPkceSupported(
   );
 }
 
-/** jose's duration grammar, minus the signed/relative forms a tolerance can't use. */
+/** jose's duration grammar, minus forms a tolerance can't use. */
 const DURATION_MULTIPLIERS: Record<string, number> = {
   s: 1,
   m: 60,
@@ -209,14 +146,7 @@ const DURATION_MULTIPLIERS: Record<string, number> = {
 const DURATION =
   /^(\d+|\d+\.\d+) ?(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|years?|yrs?|y)$/i;
 
-/**
- * Resolves {@link OidcCoreOptions.clockTolerance} to whole seconds.
- *
- * jose takes a number or a duration string, `openid-client` only seconds —
- * the two have to agree, or a tolerance that covers offline verification but
- * not the code exchange leaves exactly the drift it exists for able to fail a
- * login.
- */
+/** Resolves {@link OidcCoreOptions.clockTolerance} to whole seconds. */
 export function resolveClockTolerance(
   clockTolerance?: string | number,
 ): number {
@@ -241,5 +171,32 @@ export function resolveClockTolerance(
   return Math.round(
     Number.parseFloat(matched[1] as string) *
       (DURATION_MULTIPLIERS[unit] as number),
+  );
+}
+
+/**
+ * The JWS algorithms offline verification accepts. An explicit list is
+ * taken as-is. A discovered one is filtered to asymmetric algorithms only.
+ */
+export function resolveSigningAlgorithms(
+  config: Configuration,
+  signingAlgorithms: string[] | undefined,
+  log: Logger,
+): string[] {
+  const advertised =
+    config.serverMetadata().id_token_signing_alg_values_supported ?? [];
+  const advertisedAlgorithms = advertised.filter(isAsymmetricAlgorithm);
+  if (advertised.length !== advertisedAlgorithms.length) {
+    log.debug(
+      `[oidc] ignoring advertised signing algorithms that no JWKS key can verify: ${advertised
+        .filter((alg) => !isAsymmetricAlgorithm(alg))
+        .join(", ")}`,
+    );
+  }
+  return (
+    signingAlgorithms ??
+    (advertisedAlgorithms.length
+      ? advertisedAlgorithms
+      : [...DEFAULT_SIGNING_ALGORITHMS])
   );
 }

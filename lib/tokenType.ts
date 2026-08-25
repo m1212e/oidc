@@ -1,33 +1,15 @@
 /**
- * Token-type binding: is this JWT — or this introspection response — the kind
- * of token it was presented as?
- *
- * Nothing in a JWT's signature says what it was minted *for*. An ID token and
- * a JWT access token come off the same key with the same `iss`/`sub`/`exp`,
- * so left unchecked, an ID token (routinely handed to front ends, logged,
- * passed to third parties) is a usable bearer credential — the exact
- * substitution OAuth guidance warns against. A refresh token is worse: it
- * typically outlives an access token by weeks.
- *
- * Three families of signal are checked, because no single one is universal:
- * ID-token-only claims (`nonce`, `at_hash`, ...), claims that name the kind
- * outright (`token_use`, the `typ` claim, `token_type`, `events`), and the
- * `typ` JWS header (RFC 9068, though Keycloak/Auth0/Entra send a bare `"JWT"`
- * on both kinds by default — see {@link TokenTypePolicy.accessTokenTyp}).
- *
- * Keycloak has two different `typ`s, easy to conflate: the JWS **header** is
- * `JWT` unless the RFC 9068 option is enabled, while the value naming the
- * kind (`Bearer`/`ID`/`Refresh`) is a **claim**. The claim is always checked;
- * `accessTokenTyp` pins the header and must never be `"Bearer"` for Keycloak.
+ * Checks that a JWT (or introspection response) is the kind of token it
+ * was presented as, so an id token can't be used where an access token is
+ * expected, and vice versa. Configure via
+ * {@link OidcCoreOptions.idTokenOnlyClaims} and
+ * {@link OidcCoreOptions.accessTokenTyp} on `createOidcCore`.
  */
 
 import type { AudienceClaims } from "./audience";
 import { OidcTokenError, type TokenKind } from "./errors";
 
-/**
- * Claims whose presence proves a JWT is an ID token, so a token presented as
- * an access token carrying any of them is refused.
- */
+/** Claims that only ever appear on an id token. */
 export const DEFAULT_ID_TOKEN_ONLY_CLAIMS: readonly string[] = [
   "nonce",
   "at_hash",
@@ -35,21 +17,14 @@ export const DEFAULT_ID_TOKEN_ONLY_CLAIMS: readonly string[] = [
   "s_hash",
 ];
 
-/** The `typ` RFC 9068 §2.1 gives JWT access tokens, normalized. */
+/** The RFC 9068 `typ` for JWT access tokens, normalized. */
 const ACCESS_TOKEN_TYP = "application/at+jwt";
 
 /**
- * What a value naming a token's kind means, whether it arrives as a `typ`
- * claim (Keycloak), a `token_type` (RFC 7662/6749), or a `token_use`
- * (Cognito). Compared after lowercasing; anything not listed is *unknown*
- * rather than wrong, so a provider's own vocabulary here isn't rejected.
- *
- * Keyed by the *bare* value (RFC 7515 §4.1.9 lets the `application/` prefix
- * be omitted) so each kind isn't spelled twice.
- *
- * A `Map`, not an object: the key comes straight out of a token and is
- * therefore attacker-chosen, and an object lookup would answer
- * `"constructor"`/`"__proto__"` from `Object.prototype`.
+ * Maps the values providers use to name a token's kind (via `typ`,
+ * `token_type`, or `token_use`) to the kind itself. A `Map` rather than an
+ * object, since the key comes from the token and shouldn't touch
+ * `Object.prototype`.
  */
 const NAMED_TOKEN_KINDS = new Map<string, TokenKind | "other">([
   ["access", "access"],
@@ -72,11 +47,7 @@ const NAMED_TOKEN_KINDS = new Map<string, TokenKind | "other">([
   ["serialized-id", "other"],
 ]);
 
-/**
- * The kind a value names, or `undefined` if it names none this library knows.
- * Strips a single leading `application/` (RFC 7515 §4.1.9 media-type
- * equivalence) before looking it up.
- */
+/** The kind a value names, or `undefined` if it names none this library knows. */
 function namedKind(value: unknown): TokenKind | "other" | undefined {
   if (typeof value !== "string" || value.length === 0) return undefined;
   const bare = value
@@ -86,21 +57,14 @@ function namedKind(value: unknown): TokenKind | "other" | undefined {
   return NAMED_TOKEN_KINDS.get(bare);
 }
 
-/**
- * jose's own `typ` normalization, so `"at+jwt"` and `"application/at+jwt"`
- * compare equal however a provider or caller spells it.
- */
+/** Normalizes `typ` so `"at+jwt"` and `"application/at+jwt"` compare equal. */
 function normalizeTyp(typ: unknown): string | undefined {
   if (typeof typ !== "string" || typ.length === 0) return undefined;
   const lower = typ.toLowerCase();
   return lower.includes("/") ? lower : `application/${lower}`;
 }
 
-/**
- * Thrown when a token is not the kind it was presented as — an ID or refresh
- * token in the access-token slot, most importantly. A permanent rejection:
- * no other strategy and no refresh can turn one kind of token into another.
- */
+/** Thrown when a token isn't the kind it was presented as. */
 export class OidcTokenTypeError extends OidcTokenError {
   constructor(tokenKind: TokenKind, claim: string, message: string) {
     super(tokenKind, claim, message);
@@ -112,11 +76,7 @@ export type TokenTypePolicy = {
   idTokenOnlyClaims: readonly string[];
   /** Normalized required `typ` for access tokens, or `undefined` when not configured. */
   accessTokenTyp?: string;
-  /**
-   * Whether an introspection response must affirmatively name the kind of
-   * token it was presented as. See
-   * {@link OidcCoreOptions.requireIntrospectedTokenType}.
-   */
+  /** See {@link OidcCoreOptions.requireIntrospectedTokenType}. */
   requireIntrospectedTokenType: boolean;
 };
 
@@ -133,9 +93,8 @@ export function buildTokenTypePolicy(opts: {
 }
 
 /**
- * The claim-level half of the policy — everything decidable without the JWS
- * header, and therefore what an RFC 7662 introspection response can also be
- * held to.
+ * Checks everything decidable from claims alone, without a JWS header. Also
+ * used for introspection responses, which have no header at all.
  */
 export function assertTokenTypeFromClaims(
   claims: AudienceClaims,
@@ -153,8 +112,7 @@ export function assertTokenTypeFromClaims(
     }
   }
 
-  // Only consulted when the value names a kind this library recognizes — a
-  // provider putting something else there (a plain "JWT") says nothing.
+  // Only checked when the value names a kind this library recognizes.
   for (const claim of ["token_use", "typ", "token_type"] as const) {
     const kind = namedKind(claims[claim]);
     if (kind === undefined || kind === tokenKind) continue;
@@ -169,9 +127,7 @@ export function assertTokenTypeFromClaims(
     );
   }
 
-  // Checked in both slots: a logout token is shaped like an ID token and
-  // satisfies the access-token binding too (same iss/aud/azp), so `events` —
-  // the claim that says it's neither — isn't the id slot's business alone.
+  // A logout token is shaped like an id token, so check both slots.
   if (claims.events !== undefined) {
     throw new OidcTokenTypeError(
       tokenKind,
@@ -184,13 +140,8 @@ export function assertTokenTypeFromClaims(
 }
 
 /**
- * The complete policy for a JWT jose has verified: the claim rules above plus
- * the `typ` header rule.
- *
- * {@link TokenTypePolicy.accessTokenTyp} pins the header exactly where
- * configured. Where it isn't, the header is still read for a value naming a
- * kind outright, in both slots symmetrically — believing a header that names
- * the wrong kind is never a configuration choice, only requiring one is.
+ * The complete policy for a JWT jose has verified: the claim rules above,
+ * plus the `typ` header rule.
  */
 export function assertTokenTypeAfterJwtVerify(
   claims: AudienceClaims,
@@ -229,14 +180,9 @@ export function assertTokenTypeAfterJwtVerify(
 }
 
 /**
- * The policy for an introspection response presented as an *access* token.
- *
- * `active: true` only means the token is live at this AS, not that it's an
- * access token — one endpoint answers for every token type, so a refresh
- * token introspects just as successfully and satisfies the same audience
- * checks. An absent `token_type` is in practice the refresh-token case (RFC
- * 7662 §2.2 defines it only for tokens that have one), so requiring the
- * affirmative answer is what closes the substitution.
+ * The policy for an introspection response presented as an access token.
+ * `active: true` alone doesn't mean it's an access token, since one
+ * endpoint answers for every token type.
  */
 export function assertIntrospectedAccessToken(
   claims: AudienceClaims,
@@ -256,13 +202,7 @@ export function assertIntrospectedAccessToken(
 
 /**
  * The mirror of {@link assertIntrospectedAccessToken} for an introspection
- * response presented as an *ID* token — otherwise an access or refresh token
- * introspects successfully in the `id_token` slot and authenticates the
- * request just the same.
- *
- * Runs the claim rules for `"id"`, which only checks the kind-naming claims
- * plus `events` — the ID-token-only claims are gated behind the access-token
- * slot, so a response echoing `nonce`/`at_hash` is unaffected.
+ * response presented as an id token.
  */
 export function assertIntrospectedIdToken(
   claims: AudienceClaims,

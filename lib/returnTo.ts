@@ -1,44 +1,24 @@
 /**
  * Post-login redirect validation.
  *
- * `returnTo` usually starts as attacker-influenced input (`/login?next=...`),
- * travels through the IdP inside the OAuth `state`, and comes back out of
- * `resolveSignin` to be redirected to — the textbook open-redirect shape,
- * and an especially useful one for phishing since the victim arrives already
- * authenticated. The `state` check doesn't help here: it protects against a
- * *foreign* authorization response, not a value the app itself put inside it.
- *
- * So the value is validated on the way in (`startSignin`) and again on the
- * way out (`resolveSignin`), since a stored `state` may predate this check or
- * come from a caller that bypassed `startSignin`.
- *
- * The default policy is "a path on this site and nothing else". Cross-origin
- * landings need {@link OidcCoreOptions.allowedReturnToOrigins} — an allowlist
- * rather than a flag, since "off" isn't a coherent middle ground here.
+ * By default, `returnTo` must be a same-site path (e.g. `"/dashboard"`). To
+ * allow redirecting to another origin after login, list it in
+ * {@link OidcCoreOptions.allowedReturnToOrigins}.
  */
 
 import { OidcError } from "./errors";
 
-/**
- * A relative `returnTo` is resolved against this to see where it would
- * actually navigate. `.invalid` is reserved by RFC 2606 and can never
- * resolve.
- */
+/** Used to resolve a relative `returnTo` and check where it actually navigates. */
 const PROBE_ORIGIN = "https://return-to.invalid";
 
 /**
- * Anything a browser would strip, normalize, or treat as a header break,
- * plus the backslash — which a URL parser reads as a slash, making it the
- * quiet way to write `//evil.example`.
+ * Control characters, spaces, and backslashes (read as a slash by URL
+ * parsers, so a quiet way to write `//evil.example`).
  */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: catching them is the point
 const FORBIDDEN_CHARACTERS = /[\u0000-\u0020\u007f\\]/;
 
-/**
- * Thrown when a post-login redirect target is not one this configuration
- * permits. Raised by `startSignin` for a caller-supplied target, and by
- * `resolveSignin` for one read back out of the `state`.
- */
+/** Thrown when a post-login redirect target isn't one this configuration permits. */
 export class OidcReturnToError extends OidcError {
   /** The rejected value, for logging. Never redirect to it. */
   readonly returnTo: string;
@@ -91,10 +71,8 @@ function assertNoForbiddenCharacters(value: string): void {
 }
 
 /**
- * A relative target must be a path beginning with a single `/`. Checked by
- * resolving it against a probe origin and confirming the origin didn't
- * change — which is what catches the forms that only *look* relative:
- * `//evil.example`, and `/\evil.example` (backslash read as a second slash).
+ * A relative target must be a path beginning with a single `/`. Rejects
+ * values that only look relative, like `//evil.example`.
  */
 function assertSafeRelativeReturnTo(returnTo: string): void {
   let resolved: URL;
@@ -132,9 +110,6 @@ function assertSafeAbsoluteReturnTo(
     );
   }
 
-  // Checked before the allowlist: `blob:https://app.example.com/…` reports
-  // the *inner* URL's origin, so an origin match alone would pass a scheme
-  // this policy never meant to permit.
   if (absolute.protocol !== "https:" && absolute.protocol !== "http:") {
     throw new OidcReturnToError(
       returnTo,
@@ -151,8 +126,6 @@ function assertSafeAbsoluteReturnTo(
     );
   }
 
-  // The reverse of `user@evil.example` (already caught by the allowlist):
-  // credentials *on* an allowed origin still disguise the navigation.
   if (absolute.username || absolute.password) {
     throw new OidcReturnToError(
       returnTo,
@@ -162,14 +135,11 @@ function assertSafeAbsoluteReturnTo(
 }
 
 /**
- * Validates a post-login redirect target against {@link ReturnToPolicy} and
- * returns it unchanged, or throws {@link OidcReturnToError}.
- *
- * Accepts a same-site path (`"/dashboard"`) or, if listed in
+ * Validates a post-login redirect target and returns it unchanged, or
+ * throws {@link OidcReturnToError}. Accepts a same-site path
+ * (`"/dashboard"`) or, if listed in
  * {@link OidcCoreOptions.allowedReturnToOrigins}, an absolute `http`/`https`
- * URL. Call this on any `returnTo` value before using it — see
- * {@link OidcCore.startSignin} and {@link OidcCore.resolveSignin} for where
- * this library calls it.
+ * URL. `startSignin` and `resolveSignin` already call this for you.
  */
 export function assertSafeReturnTo(
   returnTo: string,
@@ -194,16 +164,9 @@ export function assertSafeReturnTo(
 }
 
 /**
- * Validates an absolute redirect URI — the app's own OAuth `redirect_uri` or
- * RP-initiated logout `post_logout_redirect_uri` — and returns it unchanged,
- * or throws {@link OidcReturnToError}.
- *
- * Weaker than {@link assertSafeReturnTo} on purpose: both values must be
- * registered with the provider, which is what actually decides where the
- * user can land, so there's no origin allowlist here. This only refuses what
- * a provider might echo back unvalidated: non-http(s) schemes
- * (`javascript:`, `data:`), embedded credentials, and control/space
- * characters.
+ * Validates an absolute redirect URI (an OAuth `redirect_uri` or
+ * `post_logout_redirect_uri`) and returns it unchanged, or throws
+ * {@link OidcReturnToError}.
  */
 export function assertSafeRedirectUri(uri: string, label: string): string {
   if (typeof uri !== "string" || uri.length === 0) {

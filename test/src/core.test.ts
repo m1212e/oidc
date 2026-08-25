@@ -1,6 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createOidcCore, type OidcCore } from "../../lib/core";
-import { OidcGrantError, OidcTokenValidationError } from "../../lib/errors";
+import {
+  OidcGrantError,
+  OidcInputError,
+  OidcTokenValidationError,
+} from "../../lib/errors";
 import { OidcTokenTypeError } from "../../lib/tokenType";
 import {
   startTestOidcProvider,
@@ -131,7 +135,7 @@ describe("nonce", () => {
     );
 
     // The exchange failure surfaces as an OidcGrantError so that one
-    // `instanceof OidcError` covers it; `openid-client` reports the failed
+    // `instanceof OidcError` covers it. `openid-client` reports the failed
     // comparison by code, which rides along as the cause.
     const err = (await core
       .resolveSignin({ callbackUrl, codeVerifier, expectedState: state })
@@ -206,7 +210,7 @@ describe("processTokens", () => {
     expect(result.refreshed).toBe(false);
     expect(result.user.sub).toBe("user-1");
     expect(result.user.email).toBe("user-1@example.com");
-    // oidc-provider's default access tokens are opaque, not JWTs — this can
+    // oidc-provider's default access tokens are opaque, not JWTs. This can
     // only have succeeded by falling back to real introspection.
     expect(idp.calls.introspection).toBeGreaterThan(introspectionCallsBefore);
   });
@@ -231,13 +235,9 @@ describe("processTokens", () => {
     expect(result.refreshed).toBe(true);
     expect(result.refreshedTokens?.access_token).toBeTruthy();
     expect(result.user.sub).toBe("user-2");
-    // The shortcut skips introspection *for the stale expired token* — it
-    // does not exempt the fresh token set from validation.
-    // oidc-provider's access tokens are opaque, so the new access token
-    // still needs exactly one legitimate introspection call; if the
-    // shortcut had NOT engaged, the stale token would have cost at least
-    // one more (the id token has no opaque fallback), so this stays a
-    // meaningful lower bound.
+    // The shortcut skips introspection only for the stale expired token, not
+    // for the fresh token set. oidc-provider's access tokens are opaque, so
+    // exactly one legitimate introspection call is expected here.
     expect(idp.calls.introspection).toBe(introspectionCallsBefore + 1);
     expect(idp.calls.userinfo).toBe(userinfoCallsBefore);
   });
@@ -248,8 +248,8 @@ describe("processTokens", () => {
       "openid profile email offline_access",
     );
 
-    // Signed with a key the provider's JWKS doesn't have — not an expiry
-    // failure, so this must exhaust the full fallback chain before refreshing.
+    // Signed with a key the provider's JWKS doesn't have (not an expiry
+    // failure), so this must exhaust the full fallback chain before refreshing.
     const badToken = await idp.sign({ sub: "user-3" }, { badKid: true });
 
     const result = await core.processTokens({
@@ -287,8 +287,8 @@ describe("processTokens token-type binding", () => {
     );
 
     // A textbook ID token: signed by the issuer, `aud` and `azp` both this
-    // client, unexpired. Everything the access-token audience policy asks for
-    // — the substitution is only visible in the ID-token-only claims.
+    // client, unexpired. Everything the access-token audience policy asks
+    // for. The substitution is only visible in the ID-token-only claims.
     const idTokenAsAccessToken = await idp.sign({
       sub: "user-typeconfusion",
       azp: idp.clientId,
@@ -345,8 +345,8 @@ describe("processTokens rejects partially-validated token sets", () => {
   test("throws when one supplied token validated and the other never could", async () => {
     const { tokens } = await login("user-partial");
     // Signed with a key the provider's JWKS doesn't have. The id token beside
-    // it is genuine — validating only that one would hand back a `user` while
-    // silently dropping an access token nobody could verify.
+    // it is genuine, so validating only that one would hand back a `user`
+    // while silently dropping an access token nobody could verify.
     const forgedAccessToken = await idp.sign(
       { sub: "user-partial", azp: idp.clientId },
       { badKid: true },
@@ -441,9 +441,9 @@ describe("processTokens rejects partially-validated token sets", () => {
 
   test("rejects a call carrying no tokens at all", async () => {
     await expect(
-      // The types forbid this; a JS caller can still do it.
+      // The types forbid this. A JS caller can still do it.
       core.processTokens({} as { id_token: string }),
-    ).rejects.toThrow(TypeError);
+    ).rejects.toThrow(OidcInputError);
   });
 
   test("an omitted access token (undefined) is skipped, not an error", async () => {
@@ -463,7 +463,7 @@ describe("processTokens rejects partially-validated token sets", () => {
         access_token: null,
         id_token: tokens.id_token as string,
       }),
-    ).rejects.toThrow(TypeError);
+    ).rejects.toThrow(OidcInputError);
   });
 
   test("rejects an empty-string access token even with a valid id token present", async () => {
@@ -473,7 +473,7 @@ describe("processTokens rejects partially-validated token sets", () => {
         access_token: "",
         id_token: tokens.id_token as string,
       }),
-    ).rejects.toThrow(TypeError);
+    ).rejects.toThrow(OidcInputError);
   });
 
   test("rejects a `null` id token even with a valid access token present", async () => {
@@ -483,7 +483,7 @@ describe("processTokens rejects partially-validated token sets", () => {
         access_token: tokens.access_token as string,
         id_token: null,
       }),
-    ).rejects.toThrow(TypeError);
+    ).rejects.toThrow(OidcInputError);
   });
 
   test("rejects a `null` refresh token", async () => {
@@ -493,7 +493,7 @@ describe("processTokens rejects partially-validated token sets", () => {
         access_token: tokens.access_token as string,
         refresh_token: null,
       }),
-    ).rejects.toThrow(TypeError);
+    ).rejects.toThrow(OidcInputError);
   });
 });
 
@@ -521,6 +521,8 @@ describe("clockTolerance", () => {
   });
 
   test("refuses a tolerance openid-client could not accept", async () => {
+    // A startup misconfiguration, so a plain TypeError rather than an
+    // OidcInputError: it should stop the process, not answer a request.
     await expect(
       createOidcCore({
         issuer: idp.issuer,

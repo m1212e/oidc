@@ -10,6 +10,8 @@ import { createOidcCore, type OidcCore } from "../../lib/core";
 import {
   OidcError,
   OidcGrantError,
+  OidcInputError,
+  OidcLogoutError,
   OidcSubjectError,
   OidcTokenValidationError,
   OidcUserInfoError,
@@ -65,7 +67,7 @@ describe("refresh tokens are not access tokens", () => {
     const refreshToken = tokens.refresh_token as string;
     expect(refreshToken).toBeTruthy();
 
-    // Opaque, so it reaches introspection — where `active: true`, this
+    // Opaque, so it reaches introspection, where `active: true`, this
     // client's `client_id` and the user's `sub` all check out. Only the
     // absence of an affirmative token type gives it away, and without that
     // check a 14-day credential would pass as a 1-hour one.
@@ -107,7 +109,7 @@ describe("refresh tokens are not access tokens", () => {
 describe("token-type claims that name the kind", () => {
   test("refuses a Keycloak-shaped refresh token in the access slot", async () => {
     // Keycloak signs refresh tokens with the same key as everything else and
-    // names the kind in a payload `typ` claim — the JWS header just says
+    // names the kind in a payload `typ` claim. The JWS header just says
     // "JWT", so pinning the header cannot catch this one.
     const refreshShaped = await idp.sign({
       sub: "user-typ-refresh",
@@ -123,7 +125,7 @@ describe("token-type claims that name the kind", () => {
   });
 
   test("refuses a Keycloak-shaped ID token in the access slot", async () => {
-    // No nonce, no at_hash — the previously documented gap. The `typ` claim
+    // No nonce, no at_hash: the previously documented gap. The `typ` claim
     // closes it wherever the provider sets one.
     const idShaped = await idp.sign({
       sub: "user-typ-id",
@@ -154,7 +156,7 @@ describe("token-type claims that name the kind", () => {
   });
 
   test("ignores a typ claim that names nothing it knows", async () => {
-    // Providers put their own vocabulary here; an unrecognized value is not
+    // Providers put their own vocabulary here. An unrecognized value is not
     // evidence either way and must not become a rejection.
     const token = await idp.sign({
       sub: "user-typ-unknown",
@@ -171,7 +173,7 @@ describe("a spent refresh token is never lost", () => {
    * Forces the shape the fix exists for: the supplied token cannot validate,
    * so the refresh token is spent, and the *replacement* is then rejected too
    * (its `aud` cannot match a resource audience this provider knows nothing
-   * about). The old refresh token is dead either way — the question is only
+   * about). The old refresh token is dead either way. The question is only
    * whether the caller is handed what replaced it.
    */
   async function spendThenFail() {
@@ -229,8 +231,8 @@ describe("a refresh cannot change who is signed in", () => {
   test("refuses a refresh token belonging to another subject", async () => {
     const attacker = await login("user-swap-attacker", OFFLINE);
     // The victim's token cannot be verified, so the chain reaches for the
-    // refresh token beside it — which belongs to somebody else entirely. The
-    // resulting token set is perfectly valid; it is just not this session's.
+    // refresh token beside it, which belongs to somebody else entirely. The
+    // resulting token set is perfectly valid, it is just not this session's.
     const victimToken = await idp.sign(
       { sub: "user-swap-victim" },
       { badKid: true },
@@ -292,7 +294,7 @@ describe("returnTo through the real flow", () => {
   });
 
   test("refuses one that arrives back inside a hand-made state", async () => {
-    // A state this library never minted — an older release, another process,
+    // A state this library never minted: an older release, another process,
     // or a caller that built one itself. The value is about to be redirected
     // to, so the callback re-checks rather than trusting the round trip.
     const hostileState = JSON.stringify({
@@ -442,9 +444,9 @@ describe("introspection stays within the configured mode", () => {
   test("does not introspect a failed JWT id token beside an opaque access token", async () => {
     const { tokens } = await login("user-mode-mix");
     // A JWT the issuer's own JWKS rejected. Under "opaque-only" it must not be
-    // introspected — but the id slot used to skip the mode check entirely, so
+    // introspected, but the id slot used to skip the mode check entirely, so
     // an introspectable access token beside it was enough to send this to the
-    // AS anyway, which is the amplification the mode exists to prevent.
+    // AS anyway. That's the amplification the mode exists to prevent.
     const forgedId = await idp.sign(
       { sub: "user-mode-mix", azp: idp.clientId },
       { badKid: true },
@@ -613,7 +615,7 @@ describe("a verification flag never vouches for the other token's value", () => 
    * the address the issuer verified, beside a newer id token naming the address
    * the user has just changed to and has *not* verified. Both tokens are
    * genuine, both name the same subject, and both pass every audience and
-   * type check — they simply describe different moments. A per-claim merge
+   * type check. They simply describe different moments. A per-claim merge
    * hands the new address back marked as verified, which is the account
    * takeover the flag exists to prevent.
    */
@@ -784,14 +786,14 @@ describe("PKCE is not silently skipped", () => {
         codeVerifier: undefined as unknown as string,
         expectedState: state,
       }),
-    ).rejects.toThrow(TypeError);
+    ).rejects.toThrow(OidcInputError);
     await expect(
       core.resolveSignin({
         callbackUrl,
         codeVerifier: "",
         expectedState: state,
       }),
-    ).rejects.toThrow(TypeError);
+    ).rejects.toThrow(OidcInputError);
   });
 });
 
@@ -851,7 +853,7 @@ describe("construction and argument guards", () => {
         accessToken: "some-token",
         expectedSubject: "",
       }),
-    ).rejects.toThrow(TypeError);
+    ).rejects.toThrow(OidcInputError);
   });
 
   test("reports a failed UserInfo call inside the error hierarchy", async () => {
@@ -867,7 +869,7 @@ describe("construction and argument guards", () => {
 describe("an identity is an issuer plus a subject", () => {
   test("the user carries the issuer it was verified against", async () => {
     // `sub` is unique only within an issuer (OIDC Core 2), and several
-    // providers mint guessable ones — a numeric id, a username, an email. An
+    // providers mint guessable ones: a numeric id, a username, an email. An
     // application talking to two IdPs and keying accounts on `sub` alone lets a
     // subject at one collide with a different person at the other, so the claim
     // that scopes it has to be reachable from the shape callers actually read.
@@ -881,7 +883,7 @@ describe("an identity is an issuer plus a subject", () => {
 
   test("the issuer is the verified one, not whatever a claim said", async () => {
     // The only claim set a caller can steer here is an introspection response,
-    // which need not carry `iss` at all — and if it did, it would be the AS
+    // which need not carry `iss` at all. If it did, it would be the AS
     // describing itself rather than something this library checked. The value
     // reported is the issuer every strategy was pinned to.
     const opaque = await createOidcCore({
@@ -902,8 +904,8 @@ describe("sender-constrained tokens are not silently downgraded", () => {
   test("warns when an access token carries a cnf claim", async () => {
     // A `cnf` claim is the issuer binding the token to a key (RFC 9449 DPoP,
     // RFC 8705 mTLS). Checking that needs the proof travelling with the HTTP
-    // request, which this library never sees — so the token validates and is
-    // then usable by anyone who stole it, which is the one thing the constraint
+    // request, which this library never sees, so the token validates and is
+    // then usable by anyone who stole it, the one thing the constraint
     // exists to prevent. It cannot be checked here, so it is said out loud.
     const warnings: string[] = [];
     const bound = await createOidcCore({
@@ -952,5 +954,99 @@ describe("sender-constrained tokens are not silently downgraded", () => {
       access_token: tokens.access_token as string,
     });
     expect(warnings.some((line) => line.includes('"cnf"'))).toBe(false);
+  });
+});
+
+describe("what a caller has to catch to answer 401", () => {
+  /**
+   * A missing or empty token is the ordinary "this browser has no session"
+   * case, so it belongs on the same path as a token that failed to
+   * validate. If it escaped as a bare `TypeError`, an auth middleware
+   * catching `OidcError` would turn a logged-out visitor into a 500.
+   */
+  test("a request-path input fault is inside the error hierarchy", async () => {
+    const err = (await core
+      .processTokens({ access_token: null })
+      .catch((e: unknown) => e)) as OidcInputError;
+    expect(err).toBeInstanceOf(OidcInputError);
+    expect(err).toBeInstanceOf(OidcError);
+  });
+
+  test("so is every other per-call guard", async () => {
+    const guards = [
+      () => core.processTokens({} as { id_token: string }),
+      () => core.processTokens({ access_token: "x", subject: "" }),
+      () => core.refresh({ refreshToken: "x", expectedSubject: "" }),
+      () =>
+        core.startSignin({
+          redirectUri: idp.redirectUri,
+          returnTo: "/dashboard",
+          scope: "profile",
+        }),
+      () =>
+        core.fetchUserInfoFromIssuer({
+          accessToken: "x",
+          expectedSubject: "",
+        }),
+    ];
+
+    for (const guard of guards) {
+      const err = await guard().catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(OidcError);
+    }
+  });
+
+  /**
+   * The other half of the split: a misconfiguration is a bug that should
+   * stop the process at startup, not something a request handler catches
+   * and answers 401 to.
+   */
+  test("but a startup misconfiguration stays a plain TypeError", async () => {
+    const err = (await createOidcCore({
+      issuer: idp.issuer,
+      clientId: "",
+      development: true,
+    }).catch((e: unknown) => e)) as Error;
+    expect(err).toBeInstanceOf(TypeError);
+    expect(err).not.toBeInstanceOf(OidcError);
+  });
+});
+
+describe("a provider with no RP-initiated logout", () => {
+  let noLogoutIdp: TestOidcProvider;
+  let noLogoutCore: OidcCore;
+
+  beforeAll(async () => {
+    noLogoutIdp = await startTestOidcProvider({ rpInitiatedLogout: false });
+    noLogoutCore = await createOidcCore({
+      issuer: noLogoutIdp.issuer,
+      clientId: noLogoutIdp.clientId,
+      development: true,
+    });
+  });
+
+  afterAll(async () => {
+    await noLogoutIdp.close();
+  });
+
+  test("reports it inside the error hierarchy, not as a raw client fault", async () => {
+    const err = (await noLogoutCore
+      .getLogoutUrl({
+        postLogoutRedirectUri: noLogoutIdp.postLogoutRedirectUri,
+      })
+      .catch((e: unknown) => e)) as OidcLogoutError;
+
+    expect(err).toBeInstanceOf(OidcLogoutError);
+    expect(err).toBeInstanceOf(OidcError);
+    expect(err.message).toContain("end_session_endpoint");
+    expect(err.cause).toBeDefined();
+  });
+
+  test("the redirect URI is still checked before the provider is consulted", async () => {
+    await expect(
+      noLogoutCore.getLogoutUrl({
+        postLogoutRedirectUri: "javascript:alert(1)",
+      }),
+    ).rejects.toBeInstanceOf(OidcReturnToError);
   });
 });

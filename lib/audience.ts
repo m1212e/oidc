@@ -199,15 +199,78 @@ export function assertTokenAudience(
 }
 
 /**
- * The audience policy for an id token's introspection response, with any
- * configured resource audience dropped since an id token's `aud` is always
- * the client id.
+ * The audience policy for an introspection response presented as an id
+ * token.
+ *
+ * An id token's `aud` names this client, held to exactly that, the same
+ * rule the offline path applies. But RFC 7662 leaves `aud` optional in an
+ * introspection response, and a provider that omits it names the client in
+ * `client_id` instead. So a response without `aud` may still be bound by
+ * an authorized-party claim, and only one carrying neither is unbindable.
+ * Any configured {@link AudiencePolicy.expectedAudience} is ignored here: a
+ * resource audience describes access tokens, and an id token never carries
+ * one.
  */
-export function idTokenIntrospectionPolicy(
+export function assertIntrospectedIdTokenAudience(
+  claims: AudienceClaims,
   policy: AudiencePolicy,
-): AudiencePolicy {
-  if (!policy.expectedAudience) return policy;
-  return { ...policy, expectedAudience: undefined };
+): void {
+  if (policy.verifyAudience) {
+    if (!policy.verifyAudience(claims, "id")) {
+      throw new OidcAudienceError(
+        "id",
+        "aud",
+        "verifyAudience rejected the id token",
+      );
+    }
+    return;
+  }
+
+  const aud = toAudienceList(claims.aud);
+  if (aud.length && !aud.includes(policy.clientId)) {
+    throw new OidcAudienceError(
+      "id",
+      "aud",
+      `id token introspection response reports "aud" (${aud.join(", ")}), which does not include this client id (${policy.clientId})`,
+    );
+  }
+
+  // `azp` is the claim OIDC defines for this, whatever the configured list
+  // covers for access tokens.
+  const claimNames = policy.authorizedPartyClaims.includes("azp")
+    ? policy.authorizedPartyClaims
+    : ["azp", ...policy.authorizedPartyClaims];
+
+  const party = findAuthorizedParty(claims, claimNames);
+  if (party) {
+    if (typeof party.value !== "string" || party.value !== policy.clientId) {
+      throw new OidcAudienceError(
+        "id",
+        party.claim,
+        `id token introspection response reports "${party.claim}" (${
+          typeof party.value === "string"
+            ? party.value
+            : JSON.stringify(party.value)
+        }), which is not this client id (${policy.clientId})`,
+      );
+    }
+    return;
+  }
+
+  if (aud.length > 1) {
+    throw new OidcAudienceError(
+      "id",
+      "azp",
+      `id token introspection response reports an "aud" naming multiple parties (${aud.join(", ")}) but nothing identifying the authorized one`,
+    );
+  }
+  if (aud.length) return;
+
+  throw new OidcAudienceError(
+    "id",
+    "aud",
+    `id token introspection response cannot be bound to this client: it reports no "aud" and carries none of the authorized-party claims (${claimNames.join(", ")}). Extend "authorizedPartyClaims" with the claim your provider reports, or supply "verifyAudience".`,
+  );
 }
 
 export function buildAudiencePolicy(opts: {

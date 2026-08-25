@@ -1,5 +1,6 @@
 import {
   attachRefreshedTokens,
+  OidcInputError,
   OidcSubjectError,
   OidcTokenValidationError,
   type RefreshedTokenSet,
@@ -26,7 +27,7 @@ import type { ProcessTokensInput, ProcessTokensResult } from "./options";
 
 /**
  * `undefined` means the caller doesn't have this token at all and it's
- * skipped. Anything else — `null`, `""` — means the caller *does* have a
+ * skipped. Anything else, `null` or `""`, means the caller does have a
  * slot for it but it came out empty (an unset cookie read as `null`, a
  * template literal that resolved to `""`), which is a bug worth surfacing
  * rather than silently validating fewer tokens than intended.
@@ -37,8 +38,8 @@ function assertOptionalToken(
 ): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string" || value.length === 0) {
-    throw new TypeError(
-      `processTokens was given a malformed \`${label}\`: expected a non-empty string, or \`undefined\` to omit it — got ${
+    throw new OidcInputError(
+      `processTokens was given a malformed \`${label}\`: expected a non-empty string, or \`undefined\` to omit it, got ${
         value === null ? "null" : JSON.stringify(value)
       }. Pass \`undefined\`, not \`null\`/\`""\`, when you don't have this token.`,
     );
@@ -59,7 +60,7 @@ function createSenderConstrainedWarning(log: Logger) {
     if (cnf === undefined || cnf === null) return;
     warned = true;
     log.warn(
-      '[oidc] this access token carries a "cnf" claim: the issuer bound it to a key (DPoP or mTLS), and that binding is not being checked — validating it needs the proof that travels with the HTTP request, which this library never sees. The token is accepted as an ordinary bearer token, so a stolen one is usable by anyone. Verify the proof at your edge if you accept tokens from callers you do not control.',
+      '[oidc] this access token carries a "cnf" claim: the issuer bound it to a key (DPoP or mTLS), and that binding is not being checked. Validating it needs the proof that travels with the HTTP request, which this library never sees. The token is accepted as an ordinary bearer token, so a stolen one is usable by anyone. Verify the proof at your edge if you accept tokens from callers you do not control.',
     );
   };
 }
@@ -70,9 +71,9 @@ function createSenderConstrainedWarning(log: Logger) {
  * if needed.
  *
  * Pass a `refresh_token` so an expired or unverifiable token set can be
- * refreshed automatically. Pass `subject` (the `sub` you have on file) so
- * a refresh can't quietly return a different user's tokens. Without it
- * this only warns on a mismatch.
+ * refreshed automatically. Pass `subject` (the `sub` you have on file) so a
+ * refresh can't quietly hand back a different user's tokens. Without it,
+ * a mismatch only logs a warning.
  *
  * When {@link ProcessTokensResult.refreshed} is `true`, persist
  * `refreshedTokens` in place of the old token set. If this throws after a
@@ -113,12 +114,12 @@ export function createProcessTokens(
     const { subject } = input;
 
     if (!access_token && !id_token) {
-      throw new TypeError(
-        "processTokens needs an access token, an id token, or both — validating neither is meaningless",
+      throw new OidcInputError(
+        "processTokens needs an access token, an id token, or both. Validating neither is meaningless",
       );
     }
     if (subject !== undefined && (typeof subject !== "string" || !subject)) {
-      throw new TypeError(
+      throw new OidcInputError(
         "processTokens was given a `subject` that is not a non-empty string",
       );
     }
@@ -179,7 +180,6 @@ export function createProcessTokens(
               { access: introspectAccess, id: introspectId },
               ctx.tokenTypePolicy,
               ctx.audiencePolicy,
-              ctx.idIntrospectionPolicy,
               ctx.log,
             );
             accessTokenValue ??= introspected.accessTokenValue;
@@ -283,7 +283,7 @@ function finalizeProcessTokens({
     finalSubject !== boundSubject
   ) {
     throw new OidcSubjectError(
-      `refresh returned a token set for a different subject (${finalSubject}) than the tokens it replaced (${boundSubject}) — the refresh token does not belong to this session`,
+      `refresh returned a token set for a different subject (${finalSubject}) than the tokens it replaced (${boundSubject}). The refresh token does not belong to this session`,
       boundSubject,
       finalSubject,
     );
@@ -299,7 +299,7 @@ function finalizeProcessTokens({
 
   if (newTokens && !boundSubject) {
     log.warn(
-      "[oidc] refreshed a token set whose original subject could not be determined — the supplied tokens were opaque or unreadable, so the refreshed set could not be checked against them. Pass `subject` to processTokens to enforce it.",
+      "[oidc] refreshed a token set whose original subject could not be determined. The supplied tokens were opaque or unreadable, so the refreshed set could not be checked against them. Pass `subject` to processTokens to enforce it.",
     );
   }
 
@@ -312,7 +312,7 @@ function finalizeProcessTokens({
         idTokenValue as Record<string, unknown> | undefined,
         (claim) =>
           log.warn(
-            `[oidc] the access token and the id token disagree on "${claim}" for subject ${finalSubject ?? "(unknown)"}; using the id token's value, and dropping any verification flag that did not come with it. One of the two is stale.`,
+            `[oidc] the access token and the id token disagree on "${claim}" for subject ${finalSubject ?? "(unknown)"}. Using the id token's value, and dropping any verification flag that did not come with it. One of the two is stale.`,
           ),
       ),
       iss: issuer,

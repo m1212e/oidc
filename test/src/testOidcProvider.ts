@@ -12,19 +12,19 @@ export type TestOidcProvider = {
   /** Number of times each real provider endpoint has been hit so far. */
   calls: { introspection: number; userinfo: number; token: number };
   /**
-   * Drives a real authorization-code + PKCE flow against the provider —
+   * Drives a real authorization-code + PKCE flow against the provider,
    * following redirects and auto-completing the login/consent interactions
-   * exactly as a browser would, but without a browser or form-filling —
-   * and returns the final redirect back to `redirectUri`, carrying the
-   * real `code`/`state` the provider issued.
+   * like a browser would (without a browser or form-filling). Returns the
+   * final redirect back to `redirectUri`, carrying the real `code`/`state`
+   * the provider issued.
    */
   runAuthorizationFlow: (
     authorizationUrl: URL,
     accountId?: string,
   ) => Promise<URL>;
   /**
-   * Mints a JWT with the same key the provider signs its own ID tokens
-   * with (or, with `badKid`, a key the provider's JWKS doesn't have) — for
+   * Mints a JWT with the same key the provider signs its own ID tokens with
+   * (or, with `badKid`, a key the provider's JWKS doesn't have), for
    * exercising expiry/signature-failure paths a real login can't produce
    * on demand.
    */
@@ -35,11 +35,11 @@ export type TestOidcProvider = {
       badKid?: boolean;
       /** Overrides the default `aud` of the registered client id. */
       audience?: string | string[];
-      /** Seconds from now until `exp`; negative for an already-expired token. */
+      /** Seconds from now until `exp`. Negative for an already-expired token. */
       expiresIn?: number;
       /** Omits `exp` entirely, for a token that never expires. */
       noExpiry?: boolean;
-      /** Sets the JWS `typ` header — e.g. `"at+jwt"` for an RFC 9068 access token. */
+      /** Sets the JWS `typ` header, e.g. `"at+jwt"` for an RFC 9068 access token. */
       typ?: string;
     },
   ) => Promise<string>;
@@ -47,7 +47,13 @@ export type TestOidcProvider = {
 
 const DEFAULT_ACCOUNT = "test-user";
 
-export async function startTestOidcProvider(): Promise<TestOidcProvider> {
+export async function startTestOidcProvider(opts?: {
+  /**
+   * Whether to advertise an `end_session_endpoint`. Turn it off to stand in
+   * for a provider that has no RP-initiated logout at all. Defaults to on.
+   */
+  rpInitiatedLogout?: boolean;
+}): Promise<TestOidcProvider> {
   const clientId = "test-client";
   const redirectUri = "https://app.example.com/callback";
   const postLogoutRedirectUri = "https://app.example.com/logged-out";
@@ -62,8 +68,8 @@ export async function startTestOidcProvider(): Promise<TestOidcProvider> {
   const issuer = `http://127.0.0.1:${port}`;
 
   // Supplying our own signing key (rather than letting the provider generate
-  // one) means the test harness can mint tokens with that same key later —
-  // e.g. a validly-signed-but-expired ID token — which a real login can't
+  // one) means the test harness can mint tokens with that same key later,
+  // e.g. a validly-signed-but-expired ID token, which a real login can't
   // produce on demand.
   const kid = "test-key";
   const badKid = "not-in-jwks";
@@ -77,7 +83,7 @@ export async function startTestOidcProvider(): Promise<TestOidcProvider> {
     cookies: { keys: ["test-only-cookie-key"] },
     jwks: { keys: [{ ...privateJwk, kid, alg: "RS256", use: "sig" }] },
     // Without this, oidc-provider only puts requested claims on the ID token
-    // for flows where the client can't also call /userinfo — it otherwise
+    // for flows where the client can't also call /userinfo. It otherwise
     // expects a userinfo round-trip. Tests want the claims on the ID token
     // itself, so a JWKS-only test doesn't need a UserInfo call to succeed.
     conformIdTokenClaims: false,
@@ -98,6 +104,7 @@ export async function startTestOidcProvider(): Promise<TestOidcProvider> {
     features: {
       introspection: { enabled: true },
       devInteractions: { enabled: false },
+      rpInitiatedLogout: { enabled: opts?.rpInitiatedLogout ?? true },
     },
     async findAccount(_ctx, sub) {
       return {

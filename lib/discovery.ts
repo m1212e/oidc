@@ -122,14 +122,14 @@ export function assertPkceSupported(
   if (methods?.includes("S256")) return;
   if (methods?.length) {
     throw new TypeError(
-      `the issuer does not support the S256 PKCE challenge method (it advertises: ${methods.join(", ")}). Without it an authorization code is not bound to the login that requested it, and this library sends S256 on every authorization request — an issuer that ignores it would leave the code redeemable by anyone who obtained it.`,
+      `the issuer does not support the S256 PKCE challenge method (it advertises: ${methods.join(", ")}). This library sends S256 on every authorization request, and without it an authorization code isn't bound to the login that requested it. An issuer that ignores it would leave the code redeemable by anyone who obtained it.`,
     );
   }
   log.warn(
     `[oidc] the issuer advertises no "code_challenge_methods_supported", so it cannot be confirmed that the PKCE challenge this library sends is honoured${
       clientSecret
         ? ""
-        : " — and this is a public client, where PKCE is the only thing protecting the token endpoint"
+        : ". This is a public client, where PKCE is the only thing protecting the token endpoint"
     }. Verify that PKCE is enforced for this client at the IdP.`,
   );
 }

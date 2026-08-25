@@ -16,6 +16,7 @@ import {
   type AudienceClaims,
   type AudiencePolicy,
   assertAudienceAfterJwtVerify,
+  assertIntrospectedIdTokenAudience,
   assertTokenAudience,
   OidcAudienceError,
 } from "./audience";
@@ -177,7 +178,6 @@ export async function introspectTokens(
   which: { access: boolean; id: boolean },
   tokenTypePolicy: TokenTypePolicy,
   audiencePolicy: AudiencePolicy,
-  idIntrospectionPolicy: AudiencePolicy,
   log: Logger,
 ): Promise<StrategyOutcome> {
   const outcome = new StrategyOutcome(log);
@@ -208,10 +208,9 @@ export async function introspectTokens(
         .then((result) => {
           if (!result.active) throw new Error("id token is not active");
           assertIntrospectedIdToken(result as AudienceClaims, tokenTypePolicy);
-          assertTokenAudience(
+          assertIntrospectedIdTokenAudience(
             result as AudienceClaims,
-            "access",
-            idIntrospectionPolicy,
+            audiencePolicy,
           );
           outcome.idTokenValue = result;
         })

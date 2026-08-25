@@ -1,5 +1,5 @@
 import { fetchUserInfo } from "openid-client";
-import { OidcUserInfoError } from "../errors";
+import { OidcInputError, OidcUserInfoError } from "../errors";
 import type { CoreContext } from "./context";
 
 /**
@@ -16,8 +16,8 @@ export function createUserInfoFetcher(ctx: CoreContext) {
     expectedSubject: string;
   }) {
     if (typeof expectedSubject !== "string" || !expectedSubject) {
-      throw new TypeError(
-        "fetchUserInfoFromIssuer needs the `sub` this token set was validated for, as a non-empty string — the response is only meaningful once it is known to describe that subject",
+      throw new OidcInputError(
+        "fetchUserInfoFromIssuer needs the `sub` this token set was validated for, as a non-empty string. The response is only meaningful once it is known to describe that subject",
       );
     }
     try {

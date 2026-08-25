@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
+  assertIntrospectedIdTokenAudience,
   assertTokenAudience,
   buildAudiencePolicy,
-  idTokenIntrospectionPolicy,
   OidcAudienceError,
 } from "../../lib/audience";
 import { createOidcCore, type OidcCore } from "../../lib/core";
@@ -92,7 +92,7 @@ describe("id token audience", () => {
   });
 });
 
-describe("access token audience — provider shapes", () => {
+describe("access token audience, provider shapes", () => {
   test("Keycloak: aud is 'account', azp names the client", async () => {
     const token = await idp.sign(
       { sub: "kc-user", azp: idp.clientId },
@@ -146,7 +146,7 @@ describe("access token audience — provider shapes", () => {
 
   test("never compares an access token's aud against the client id", async () => {
     // The Keycloak trap in isolation: aud is *not* the client id and there is
-    // no expectedAudience — this must still pass on the strength of azp alone.
+    // no expectedAudience. Must still pass on the strength of azp alone.
     const token = await idp.sign(
       { sub: "no-aud-match", azp: idp.clientId },
       { audience: "totally-unrelated-resource" },
@@ -157,7 +157,7 @@ describe("access token audience — provider shapes", () => {
   });
 });
 
-describe("access token audience — backstop", () => {
+describe("access token audience, backstop", () => {
   test("rejects a token that names no client and matches no configured audience", async () => {
     const token = await idp.sign(
       { sub: "unbindable" },
@@ -187,7 +187,7 @@ describe("access token audience — backstop", () => {
       }),
     ).rejects.toBeInstanceOf(OidcAudienceError);
 
-    // An audience mismatch is permanent — refreshing cannot fix it, so the
+    // An audience mismatch is permanent. Refreshing cannot fix it, so the
     // fallback chain must short-circuit rather than spend the refresh token.
     expect(idp.calls.token).toBe(tokenCallsBefore);
   });
@@ -196,8 +196,8 @@ describe("access token audience — backstop", () => {
 describe("expectedAudience", () => {
   test("refuses an entry that is not a usable audience value", () => {
     // Silently dropping the only entry left the policy comparing the
-    // authorized party to `clientId` instead — a different question, against a
-    // value the caller never configured — while the deployment read as though
+    // authorized party to `clientId` instead: a different question, against a
+    // value the caller never configured, while the deployment read as though
     // it had pinned a resource audience.
     for (const expectedAudience of [
       "",
@@ -260,7 +260,7 @@ describe("expectedAudience", () => {
   });
 
   test("a configured audience makes authorizedPartyClaims inert", async () => {
-    // `consumer_key` names a client that is not this one; the audience match
+    // `consumer_key` names a client that is not this one. The audience match
     // is the binding, so it is never consulted.
     const api = await createOidcCore({
       issuer: idp.issuer,
@@ -321,7 +321,7 @@ describe("expectedAudience", () => {
 
 describe("checks delegated to jose", () => {
   test("an id token aud failure still short-circuits instead of refreshing", async () => {
-    // Now raised by jose's `audience` option rather than our own code — the
+    // Now raised by jose's `audience` option rather than our own code. The
     // permanent-failure mapping has to survive that hand-off.
     const foreign = await idp.sign(
       { sub: "victim-2" },
@@ -426,45 +426,152 @@ describe("escape hatches", () => {
   });
 });
 
-describe("idTokenIntrospectionPolicy", () => {
-  test("drops a resource audience an ID token could never carry", () => {
+describe("an introspected ID token is bound the same way a signed one is", () => {
+  /** What an AS reports for an ID token: the audience is the client. */
+  const introspected = {
+    active: true,
+    sub: "u",
+    client_id: "my-app",
+    aud: "my-app",
+  };
+
+  test("ignores a resource audience an ID token could never carry", () => {
     const policy = buildAudiencePolicy({
       clientId: "my-app",
       expectedAudience: "api://orders",
     });
-    const introspected = {
-      active: true,
-      sub: "u",
-      client_id: "my-app",
-      // What an AS reports for an ID token: the audience is the client.
-      aud: "my-app",
-    };
 
-    // Held to the access-token policy as-is, the resource audience makes this
-    // unvalidatable — "api://orders" is not something an ID token ever says.
+    // Held to the access-token policy, the resource audience makes this
+    // unvalidatable: "api://orders" is not something an ID token ever says.
     expect(() => assertTokenAudience(introspected, "access", policy)).toThrow(
       OidcAudienceError,
     );
-    // With the resource audience dropped, the client binding still applies.
     expect(() =>
-      assertTokenAudience(
-        introspected,
-        "access",
-        idTokenIntrospectionPolicy(policy),
-      ),
+      assertIntrospectedIdTokenAudience(introspected, policy),
     ).not.toThrow();
+  });
+
+  test("still holds the client binding", () => {
+    const policy = buildAudiencePolicy({ clientId: "my-app" });
     expect(() =>
-      assertTokenAudience(
-        { ...introspected, client_id: "another-app" },
-        "access",
-        idTokenIntrospectionPolicy(policy),
+      assertIntrospectedIdTokenAudience(
+        { ...introspected, client_id: "another-app", aud: "another-app" },
+        policy,
       ),
     ).toThrow(OidcAudienceError);
   });
 
-  test("is a no-op when no resource audience is configured", () => {
+  test("refuses a client_id naming another app even when aud is right", () => {
     const policy = buildAudiencePolicy({ clientId: "my-app" });
-    expect(idTokenIntrospectionPolicy(policy)).toBe(policy);
+    const err = (() => {
+      try {
+        assertIntrospectedIdTokenAudience(
+          { ...introspected, client_id: "another-app" },
+          policy,
+        );
+      } catch (e) {
+        return e as OidcAudienceError;
+      }
+    })();
+
+    expect(err).toBeInstanceOf(OidcAudienceError);
+    expect(err?.tokenKind).toBe("id");
+    expect(err?.claim).toBe("client_id");
+  });
+
+  test("does not step over a binding claim that is present but malformed", () => {
+    const policy = buildAudiencePolicy({ clientId: "my-app" });
+    expect(() =>
+      assertIntrospectedIdTokenAudience(
+        { ...introspected, client_id: { nested: "my-app" } },
+        policy,
+      ),
+    ).toThrow(OidcAudienceError);
+  });
+
+  test("refuses an aud naming another client, whatever client_id says", () => {
+    const policy = buildAudiencePolicy({ clientId: "my-app" });
+    // The signed path rejects this via jose's `audience` option. The
+    // introspection path has to reject it on its own, or the two paths
+    // disagree about what an ID token is allowed to say.
+    const err = (() => {
+      try {
+        assertIntrospectedIdTokenAudience(
+          { ...introspected, aud: "some-other-app" },
+          policy,
+        );
+      } catch (e) {
+        return e as OidcAudienceError;
+      }
+    })();
+
+    expect(err).toBeInstanceOf(OidcAudienceError);
+    expect(err?.tokenKind).toBe("id");
+    expect(err?.claim).toBe("aud");
+  });
+
+  test("accepts a response that names the client only in client_id", () => {
+    // RFC 7662 leaves `aud` optional, so a binding claim alone is enough.
+    const policy = buildAudiencePolicy({ clientId: "my-app" });
+    expect(() =>
+      assertIntrospectedIdTokenAudience(
+        { active: true, sub: "u", client_id: "my-app" },
+        policy,
+      ),
+    ).not.toThrow();
+  });
+
+  test("refuses a response that binds it to nothing at all", () => {
+    const policy = buildAudiencePolicy({ clientId: "my-app" });
+    const err = (() => {
+      try {
+        assertIntrospectedIdTokenAudience({ active: true, sub: "u" }, policy);
+      } catch (e) {
+        return e as OidcAudienceError;
+      }
+    })();
+
+    expect(err).toBeInstanceOf(OidcAudienceError);
+    // The report has to name the token that actually failed, not the slot
+    // the introspection helper happens to reuse.
+    expect(err?.tokenKind).toBe("id");
+    expect(err?.message).toContain("id token");
+    expect(err?.message).not.toContain("access token");
+  });
+
+  test("refuses a multi-party aud with nothing naming the authorized one", () => {
+    const policy = buildAudiencePolicy({ clientId: "my-app" });
+    expect(() =>
+      assertIntrospectedIdTokenAudience(
+        { active: true, sub: "u", aud: ["my-app", "another-app"] },
+        policy,
+      ),
+    ).toThrow(OidcAudienceError);
+  });
+
+  test("hands the whole decision to verifyAudience when one is supplied", () => {
+    const seen: string[] = [];
+    const reject = buildAudiencePolicy({
+      clientId: "my-app",
+      verifyAudience: (_claims, tokenKind) => {
+        seen.push(tokenKind);
+        return false;
+      },
+    });
+    expect(() =>
+      assertIntrospectedIdTokenAudience(introspected, reject),
+    ).toThrow(OidcAudienceError);
+    expect(seen).toEqual(["id"]);
+
+    // And its acceptance is equally final: a response the built-in rules
+    // would refuse outright still passes once verifyAudience approves it.
+    const accept = buildAudiencePolicy({
+      clientId: "my-app",
+      verifyAudience: () => true,
+    });
+    expect(() =>
+      assertIntrospectedIdTokenAudience({ active: true, sub: "u" }, accept),
+    ).not.toThrow();
   });
 });
 
@@ -472,7 +579,7 @@ describe("a malformed authorized-party claim is not stepped over", () => {
   const policy = buildAudiencePolicy({ clientId: "test-client" });
 
   test("refuses an azp that is present but not a string", () => {
-    // The claim the issuer meant as the binding is there; it just is not a
+    // The claim the issuer meant as the binding is there, it's just not a
     // usable one. Skipping to the next claim name would let the token be bound
     // by a claim its issuer did not intend for that, so it fails instead.
     expect(() =>

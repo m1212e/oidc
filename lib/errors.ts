@@ -33,6 +33,27 @@ export class OidcError extends Error {
 }
 
 /**
+ * Thrown when a per-request call was given input it cannot work with: a
+ * token slot that is `null` or `""`, no token at all, a `subject` that
+ * isn't a non-empty string.
+ *
+ * It is an {@link OidcError} on purpose. Usually it means the caller has
+ * no usable session, which belongs on the same 401 path as a token that
+ * failed to validate, not on the 500 path a bare `TypeError` would take.
+ *
+ * Startup mistakes are the other case, and stay a plain `TypeError`:
+ * anything `createOidcCore` rejects (an empty `clientId`, an unparseable
+ * `clockTolerance`, a bad `allowedReturnToOrigins` entry) is a bug in your
+ * configuration that should stop the process, not answer a request.
+ */
+export class OidcInputError extends OidcError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "OidcInputError";
+  }
+}
+
+/**
  * Thrown when a token names another client, or isn't the kind of token it
  * claims to be. Treat this as a permanent rejection, not a retryable error.
  */
@@ -171,6 +192,19 @@ export class OidcUserInfoError extends OidcError {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "OidcUserInfoError";
+  }
+}
+
+/**
+ * Thrown when an RP-initiated logout URL could not be built, almost always
+ * because the issuer advertises no `end_session_endpoint`. Providers that
+ * don't support RP-initiated logout need their own vendor-specific logout
+ * URL instead. The underlying error is available as `cause`.
+ */
+export class OidcLogoutError extends OidcError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "OidcLogoutError";
   }
 }
 

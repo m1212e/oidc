@@ -1,6 +1,7 @@
 import { refreshTokenGrant } from "openid-client";
 import {
   OidcGrantError,
+  OidcInputError,
   OidcSubjectError,
   type RefreshedTokenSet,
 } from "../errors";
@@ -29,7 +30,7 @@ export function createRefresh(ctx: CoreContext) {
       expectedSubject !== undefined &&
       (typeof expectedSubject !== "string" || !expectedSubject)
     ) {
-      throw new TypeError(
+      throw new OidcInputError(
         "refresh was given an `expectedSubject` that is not a non-empty string",
       );
     }
@@ -54,7 +55,7 @@ export function createRefresh(ctx: CoreContext) {
         );
       } else if (actual !== expectedSubject) {
         throw new OidcSubjectError(
-          `refresh returned a token set for a different subject (${actual}) than the ${expectedSubject} it was asked for — the refresh token does not belong to this session`,
+          `refresh returned a token set for a different subject (${actual}) than the ${expectedSubject} it was asked for. The refresh token does not belong to this session`,
           expectedSubject,
           actual,
         );

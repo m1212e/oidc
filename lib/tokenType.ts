@@ -107,7 +107,7 @@ export function assertTokenTypeFromClaims(
       throw new OidcTokenTypeError(
         "access",
         claim,
-        `access token carries "${claim}", a claim defined for ID tokens only — an ID token must never be accepted as an access token`,
+        `access token carries "${claim}", a claim defined for ID tokens only. An ID token must never be accepted as an access token.`,
       );
     }
   }
@@ -123,7 +123,7 @@ export function assertTokenTypeFromClaims(
         kind === "other"
           ? "neither an access token nor an ID token"
           : `an ${kind} token`
-      } — a token must be the kind it was presented as`,
+      }. A token must be the kind it was presented as.`,
     );
   }
 
@@ -174,7 +174,7 @@ export function assertTokenTypeAfterJwtVerify(
           : `an ${named} token`
       }${
         typ === ACCESS_TOKEN_TYP ? " (the RFC 9068 access token type)" : ""
-      } — a token must be the kind it was presented as`,
+      }. A token must be the kind it was presented as.`,
     );
   }
 }

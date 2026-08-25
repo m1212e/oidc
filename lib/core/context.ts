@@ -16,7 +16,6 @@ export type CoreContext = {
   /** `undefined` when the issuer advertises no `jwks_uri`. */
   jwks: Jwks | undefined;
   audiencePolicy: AudiencePolicy;
-  idIntrospectionPolicy: AudiencePolicy;
   tokenTypePolicy: TokenTypePolicy;
   returnToPolicy: ReturnToPolicy;
   introspectionMode: "opaque-only" | "auto" | "never";

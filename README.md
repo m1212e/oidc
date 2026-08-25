@@ -13,7 +13,7 @@ Requires Node 20+ (or Bun). ESM and CJS builds are both published.
 
 ## Setup
 
-Create one core per issuer/client pair, at startup, `createOidcCore` performs OIDC discovery over the network, so it must be awaited once and reused for the lifetime of the process rather than created per request.
+Create one core per issuer/client pair at startup. `createOidcCore` performs OIDC discovery over the network, so await it once and reuse it for the lifetime of the process. Don't create one per request.
 
 ```ts
 import { createOidcCore } from "@m1212e/oidc";
@@ -21,7 +21,7 @@ import { createOidcCore } from "@m1212e/oidc";
 const oidc = await createOidcCore({
   issuer: "https://kc.example.com/realms/main",
   clientId: "my-app",
-  clientSecret: process.env.OIDC_CLIENT_SECRET, // omit for a public/PKCE-only client'
+  clientSecret: process.env.OIDC_CLIENT_SECRET, // omit for a public/PKCE-only client
 
   // Set only if your IdP puts a resource audience on access tokens
   expectedAudience: "api://orders",
@@ -106,11 +106,28 @@ result.user;              // normalized, whitelisted user claims (iss + sub + pr
 result.accessTokenClaims; // raw claims / introspection response, or undefined
 result.idTokenClaims;     // raw claims / introspection response, or undefined
 ```
-> If you would like to ensure that a value is present, defaulting to an invalid value if undefined is a good idea. For example, if you want to ensure that `access_token` is present and a valid value, you can pass `{ access_token: session.access_token ?? null }` which will pass `null` instead of `undefined` if the value is not present. This will ensure that `processTokens` will throw an error if the user does not provide a valid access token. Ofcourse you can (and should) check the token presence in your store manually before calling the processTokens function, but this is a good safety net to ensure that the function will throw an error if the token is not present.
+> `undefined` and `null` mean different things here, deliberately.
+> `undefined` says "I don't have this token", and the slot is skipped.
+> `null` or `""` says "I meant to have one and it came out empty", which
+> throws [`OidcInputError`](#errors) rather than quietly validating fewer
+> tokens than you intended.
+>
+> So `access_token: session.access_token ?? null` turns a missing access token
+> into a failed call instead of a silent downgrade to ID-token-only
+> validation. It throws an `OidcError` like every other request-path failure,
+> so it lands on your 401 path and not as a 500. Check presence yourself
+> before the call if you can. This is just the safety net for when you forget.
 
 
 It validates offline against the issuer's JWKS first, falls back to
 introspection for opaque tokens, and, if a `refresh_token` was supplied, refreshes when the token set has expired or nothing else could validate it.
+
+Pass `subject` (the `sub` you already have on file for this session) whenever
+you have it. It stops a refresh from quietly handing back a different user's
+token set: without it, the check falls back to whatever the supplied tokens
+claimed, and if those were opaque there is nothing to compare against, so the
+mismatch only gets a warning. With `subject` set, a mismatch throws
+[`OidcSubjectError`](#errors).
 
 ### Persisting refreshed tokens
 
@@ -135,7 +152,7 @@ if (result.refreshed) {
 return result.user;
 ```
 
-Note that a refresh replaces the *whole* token set, even when only one of the two tokens had expired persist all three fields, not just the one you think changed. If your session store is a cookie, this means setting the cookie again on that response.
+A refresh replaces the *whole* token set, even when only one of the two tokens had expired. Persist all three fields, not just the one you think changed. If your session store is a cookie, that means setting the cookie again on that response.
 
 **This applies to the failure path too.** `processTokens` can spend the refresh
 token and *then* reject what came back. Your stored refresh token is dead from
@@ -156,7 +173,7 @@ try {
 }
 ```
 
-> A good idea is to wrap this in a single helper and use it everywhere, so no call site can forget. Alternatively, put it inside some middleware or context function so it runs automatically without you having to remember to call it.
+> Wrap this in a single helper and use it everywhere, or run it from middleware, so no call site can forget it.
 
 ### Refreshing explicitly
 
@@ -180,7 +197,12 @@ await session.destroy(); // or delete cookies
 redirect(url.toString());
 ```
 
-This builds an RP-initiated logout URL at the IdP, clear your own session before redirecting.
+This builds an RP-initiated logout URL at the IdP. Clear your own session before redirecting.
+
+Not every provider supports RP-initiated logout. One that advertises no
+`end_session_endpoint` has no URL to build, and this throws
+[`OidcLogoutError`](#errors). Destroying your own session is then all you can
+do, unless the provider documents a logout URL of its own.
 
 ## Fetching UserInfo
 
@@ -192,6 +214,15 @@ const info = await oidc.fetchUserInfoFromIssuer({
 });
 ```
 
+## One call per session at a time
+
+`processTokens` refreshes inline, and it does not coordinate with itself. If
+several requests for the same session arrive together with an expired access
+token, each one tries to spend the same refresh token. Providers that rotate
+refresh tokens and detect reuse (Keycloak, Auth0 with rotation on) answer that
+by revoking the whole session, which shows up as users being logged out at
+random under load.
+
 ## Local development
 
 Plain-HTTP requests to the IdP are rejected unless development mode is on. It is derived from the environment, enabled only when `NODE_ENV` is exactly `"development"` or set explicitly:
@@ -200,7 +231,7 @@ Plain-HTTP requests to the IdP are rejected unless development mode is on. It is
 const oidc = await createOidcCore({
   issuer: "http://localhost:8080/realms/main",
   clientId: "my-app",
-  development: true, // never in production; logs a warning when enabled
+  development: true, // never in production, logs a warning when enabled
 });
 ```
 

@@ -3,11 +3,11 @@ export {
   assertAudienceAfterJwtVerify,
   assertAudienceClaim,
   assertAuthorizedParty,
+  assertIntrospectedIdTokenAudience,
   assertTokenAudience,
   audienceVerifyOption,
   buildAudiencePolicy,
   DEFAULT_AUTHORIZED_PARTY_CLAIMS,
-  idTokenIntrospectionPolicy,
   OidcAudienceError,
 } from "./audience";
 export type {
@@ -20,10 +20,12 @@ export type {
 } from "./core";
 export {
   assertDiscoveredIssuer,
+  assertPkceSupported,
   createOidcCore,
   DEFAULT_SIGNING_ALGORITHMS,
   resolveClockTolerance,
   resolveDevelopment,
+  resolveJwksUri,
 } from "./core";
 export type {
   RefreshedTokenSet,
@@ -35,6 +37,8 @@ export {
   OidcClaimsError,
   OidcError,
   OidcGrantError,
+  OidcInputError,
+  OidcLogoutError,
   OidcStateError,
   OidcSubjectError,
   OidcTokenError,

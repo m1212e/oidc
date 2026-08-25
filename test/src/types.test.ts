@@ -88,7 +88,7 @@ describe("parseOIDCUser", () => {
       parseOIDCUser({ sub: "u", email: "u@example.com", email_verified: true })
         .email_verified,
     ).toBe(true);
-    // Absent is not false — the issuer simply said nothing.
+    // Absent is not false, the issuer simply said nothing.
     expect(
       parseOIDCUser({ sub: "u", email: "u@example.com" }).email_verified,
     ).toBeUndefined();
@@ -122,7 +122,7 @@ describe("parseOIDCUser", () => {
 
   test("reports a claim set it cannot read as an OidcError", () => {
     // `sub` is optional in an RFC 7662 response, so this is reachable with
-    // claims that already passed every signature and policy check — it has to
+    // claims that already passed every signature and policy check. It has to
     // land in the same catch block as any other rejection.
     expect(() => parseOIDCUser({ email: "x@example.com" })).toThrow(
       OidcClaimsError,
@@ -168,11 +168,10 @@ describe("parseOIDCFlowState", () => {
 
 describe("claims are validated, never coerced", () => {
   /**
-   * TypeBox's `Decode` pipeline converts on the way in, which for an identity
-   * claim is worse than a rejection: `sub: null` arrived as the string
-   * `"null"` — a subject every subject-less token set would share — while
-   * `subjectOf` in the validation chain, which demands a non-empty string, saw
-   * nothing there to bind a refresh against.
+   * TypeBox's `Decode` pipeline converts on the way in, which is worse than a
+   * rejection for an identity claim. `sub: null` used to arrive as the string
+   * `"null"`, a subject every subject-less token set would share, instead of
+   * failing the non-empty-string check that guards a refresh binding.
    */
   test.each([
     ["absent", {}],
@@ -206,7 +205,7 @@ describe("claims are validated, never coerced", () => {
       ["false", false],
       ["anything else", false],
       [1, true],
-      // Used to convert to `null`, i.e. "the issuer said nothing" — which is
+      // Used to convert to `null`, i.e. "the issuer said nothing", which is
       // the one reading a `0` must never get.
       [0, false],
       [{}, undefined],
@@ -322,9 +321,8 @@ describe("attachRefreshedTokens", () => {
   const tokenSet = { access_token: "new" } as never;
 
   test("carries the replacement on any rejection that follows a refresh", () => {
-    // The obligation comes from the refresh token already having been spent,
-    // which is true whatever went wrong afterwards — including a provider
-    // shape surprise that has nothing to do with the tokens themselves.
+    // The refresh token is already spent regardless of what fails afterward,
+    // even a provider shape surprise unrelated to the tokens themselves.
     for (const error of [
       new OidcClaimsError("unreadable claims"),
       new OidcTokenValidationError(["access"], []),

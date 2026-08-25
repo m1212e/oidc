@@ -118,9 +118,9 @@ type SubjectBinding = { subject?: string };
 /**
  * At least one of `access_token` or `id_token` is required. For all three
  * token fields, `undefined` means "I don't have this token" and it is
- * skipped; `null` or `""` is treated as malformed input and throws
- * `TypeError` — pass `undefined`, not a cookie-read `null`, when a token is
- * absent.
+ * skipped. `null` or `""` is treated as malformed input and throws
+ * {@link OidcInputError}, so pass `undefined`, not a cookie-read `null`,
+ * when a token is absent.
  */
 export type ProcessTokensInput = SubjectBinding &
   (

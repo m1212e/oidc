@@ -4,7 +4,7 @@ import {
   clockTolerance as clockToleranceOption,
   discovery,
 } from "openid-client";
-import { buildAudiencePolicy, idTokenIntrospectionPolicy } from "../audience";
+import { buildAudiencePolicy } from "../audience";
 import {
   assertDiscoveredIssuer,
   assertPkceSupported,
@@ -67,7 +67,7 @@ export async function createOidcCore(opts: OidcCoreOptions) {
 
   if (opts.verifyAudience && opts.expectedAudience !== undefined) {
     log.warn(
-      '[oidc] both "verifyAudience" and "expectedAudience" are set. "verifyAudience" replaces the audience policy entirely, so "expectedAudience" is not checked at all — assert it inside your callback, or drop one of the two.',
+      '[oidc] both "verifyAudience" and "expectedAudience" are set. "verifyAudience" replaces the audience policy entirely, so "expectedAudience" is not checked at all. Assert it inside your callback, or drop one of the two.',
     );
   }
 
@@ -103,8 +103,8 @@ export async function createOidcCore(opts: OidcCoreOptions) {
     log.warn(
       `[oidc] the issuer advertises no "jwks_uri", so no token can be verified offline. Every validation will fall back to remote introspection${
         (opts.introspection ?? "opaque-only") === "never"
-          ? ", which \"introspection: 'never'\" has switched off — no token will validate at all"
-          : " — one round trip to the IdP per request"
+          ? ", which \"introspection: 'never'\" has switched off, so no token will validate at all"
+          : ", one round trip to the IdP per request"
       }.`,
     );
   }
@@ -116,7 +116,6 @@ export async function createOidcCore(opts: OidcCoreOptions) {
     issuer,
     jwks,
     audiencePolicy,
-    idIntrospectionPolicy: idTokenIntrospectionPolicy(audiencePolicy),
     tokenTypePolicy: buildTokenTypePolicy(opts),
     returnToPolicy: buildReturnToPolicy(opts),
     introspectionMode: opts.introspection ?? "opaque-only",

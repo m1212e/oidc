@@ -28,8 +28,8 @@ describe("assertSafeReturnTo", () => {
   });
 
   test("refuses the targets that only look relative", () => {
-    // A protocol-relative URL, and the backslash spellings a URL parser
-    // normalizes into one — the whole point of resolving before deciding.
+    // A protocol-relative URL, plus the backslash spellings a URL parser
+    // normalizes into one. Resolving before deciding is the whole point.
     for (const hostile of [
       "//evil.example.com",
       "//evil.example.com/path",
@@ -142,8 +142,8 @@ describe("assertSafeReturnTo", () => {
   });
 
   test("refuses credentials embedded in an otherwise allowed target", () => {
-    // The origin here really is the allowed one — this is the spelling the
-    // allowlist cannot catch, unlike `https://app.example.com@evil.test`.
+    // The origin here really is the allowed one. This is the spelling the
+    // allowlist alone cannot catch, unlike `https://app.example.com@evil.test`.
     expect(() =>
       assertSafeReturnTo("https://user:pw@app.example.com/x", withOrigins),
     ).toThrow(OidcReturnToError);

@@ -6,7 +6,11 @@ import {
   randomPKCECodeVerifier,
   randomState,
 } from "openid-client";
-import { OidcGrantError, type RefreshedTokenSet } from "../errors";
+import {
+  OidcGrantError,
+  OidcInputError,
+  type RefreshedTokenSet,
+} from "../errors";
 import { assertSafeRedirectUri, assertSafeReturnTo } from "../returnTo";
 import { parseOIDCFlowState } from "../types";
 import type { CoreContext } from "./context";
@@ -38,7 +42,7 @@ export function createSignin(ctx: CoreContext) {
     assertSafeRedirectUri(redirectUri, "redirectUri");
 
     if (!scope.split(/\s+/).includes("openid")) {
-      throw new TypeError(
+      throw new OidcInputError(
         `invalid scope ("${scope}"): it must include "openid"`,
       );
     }
@@ -77,7 +81,7 @@ export function createSignin(ctx: CoreContext) {
     expectedState: string;
   }): Promise<ResolveSigninResult> {
     if (typeof codeVerifier !== "string" || codeVerifier.length === 0) {
-      throw new TypeError(
+      throw new OidcInputError(
         "resolveSignin was given no PKCE code verifier. Pass the `codeVerifier` startSignin returned, exactly as it was stored.",
       );
     }

@@ -1,12 +1,12 @@
 /**
- * The two things about an issuer that have to be settled before it is used at
- * all: that its signing keys can be fetched without a network attacker being
- * able to swap them, and that it will honour the PKCE challenge every
- * authorization request carries.
+ * Two things about an issuer have to be settled before it is used at all:
+ * that its signing keys can be fetched without a network attacker swapping
+ * them, and that it will honour the PKCE challenge every authorization
+ * request carries.
  *
  * Both are checked once, in `createOidcCore`, because both are properties of
- * the deployment rather than of a request — and both fail *silently* if left
- * unchecked, which is what makes construction the right place to refuse.
+ * the deployment rather than of a request, and both fail *silently* if left
+ * unchecked. That's what makes construction the right place to refuse.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -100,9 +100,9 @@ describe("assertPkceSupported", () => {
 
   test("refuses one that advertises its methods and omits S256", () => {
     // `plain` is not a fallback: a challenge equal to the verifier binds the
-    // code to nothing. And an AS that does not understand `code_challenge`
-    // ignores it and answers the exchange normally, so the flow *looks*
-    // protected — which is why this has to be a refusal, not a warning.
+    // code to nothing. An AS that doesn't understand `code_challenge` ignores
+    // it and answers the exchange normally, so the flow *looks* protected.
+    // That's why this has to be a refusal, not a warning.
     const { logger } = recordingLogger();
     expect(() => assertPkceSupported(["plain"], undefined, logger)).toThrow(
       /does not support the S256 PKCE challenge method/,
@@ -111,8 +111,8 @@ describe("assertPkceSupported", () => {
 
   test("warns, rather than throwing, when the issuer advertises nothing", () => {
     // RFC 8414 reads an absent field as "no PKCE", but providers that do
-    // support it omit it too, and there is no caller-side configuration that
-    // would fix it — only an IdP setting to go and confirm.
+    // support it omit it too. There's no caller-side config that fixes this,
+    // only an IdP setting to go confirm.
     const { logger, warnings } = recordingLogger();
     expect(() =>
       assertPkceSupported(undefined, undefined, logger),
@@ -127,7 +127,7 @@ describe("assertPkceSupported", () => {
 });
 
 describe("assertDiscoveredIssuer", () => {
-  test("leaves an issuer identifier alone — openid-client compared that itself", () => {
+  test("leaves an issuer identifier alone, openid-client compared that itself", () => {
     // Nothing here re-runs that comparison: it is exact, and it carries
     // provider exemptions this function would only get wrong.
     expect(() =>
@@ -173,7 +173,7 @@ describe("assertDiscoveredIssuer", () => {
         "https://evil.example",
       ),
     ).toThrow(/names a different issuer/);
-    // Same host, different realm — still not the issuer that was asked for.
+    // Same host, different realm: still not the issuer that was asked for.
     expect(() =>
       assertDiscoveredIssuer(
         "https://idp.example.com/realms/main/.well-known/openid-configuration",
@@ -184,8 +184,8 @@ describe("assertDiscoveredIssuer", () => {
 
   test("falls back to the origin for the RFC 8414 inserted form", () => {
     // `/.well-known/oauth-authorization-server/realms/main` cannot be reversed
-    // into its issuer — the boundary between the well-known name and the issuer
-    // path is not recoverable — so the origin is what is left to check.
+    // into its issuer. The boundary between the well-known name and the
+    // issuer path isn't recoverable, so the origin is what's left to check.
     expect(() =>
       assertDiscoveredIssuer(
         "https://idp.example.com/.well-known/oauth-authorization-server/realms/main",
@@ -201,12 +201,11 @@ describe("assertDiscoveredIssuer", () => {
   });
 
   test("refuses an issuer it cannot compare rather than stepping over it", () => {
-    // A document naming an issuer that is not a URL at all passes
-    // `openid-client` — it asserts a string, not a URL, and skips the
-    // comparison entirely for a .well-known URL. If the origin fallback then
-    // waved it through for being unparseable, the one check holding the
-    // document to the provider it came from would fail open, and `iss`,
-    // `jwks_uri` and the token endpoint would all be whatever it said.
+    // `openid-client` asserts a string, not a URL, and skips the comparison
+    // entirely for a .well-known URL, so a document naming an issuer that
+    // isn't a URL passes it. If the origin fallback then waved it through for
+    // being unparseable, `iss`, `jwks_uri` and the token endpoint would all
+    // be whatever the document said.
     for (const discovered of ["", "not-a-url", "idp.example.com"]) {
       expect(() =>
         assertDiscoveredIssuer(
@@ -216,7 +215,7 @@ describe("assertDiscoveredIssuer", () => {
       ).toThrow(/is not a URL/);
     }
     // The appended form compares the issuer as a string, so it was already
-    // closed — but it must stay a rejection rather than becoming the new error.
+    // closed. It must stay a rejection rather than become a different error.
     expect(() =>
       assertDiscoveredIssuer(
         "https://idp.example.com/.well-known/openid-configuration",
@@ -316,8 +315,8 @@ describe("createOidcCore applies both at construction", () => {
           logLevel: "silent",
         }),
       ).rejects.toThrow(/names a different issuer/);
-      // The same document reached by its issuer identifier was already refused,
-      // one layer down — which is exactly the asymmetry the check above closes.
+      // The same document reached by its issuer identifier was already
+      // refused, one layer down. That's the asymmetry the check above closes.
       await expect(
         createOidcCore({
           issuer: idp.issuer,
@@ -353,7 +352,7 @@ describe("createOidcCore applies both at construction", () => {
   });
 
   test("warns when there are no keys to verify anything against", async () => {
-    // Not a refusal — an AS issuing only opaque tokens has no keys to publish.
+    // Not a refusal, an AS issuing only opaque tokens has no keys to publish.
     // But it moves every validation onto the network, silently.
     const idp = await startMetadataOnlyIssuer((issuer) => ({
       authorization_endpoint: `${issuer}/auth`,

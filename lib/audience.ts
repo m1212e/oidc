@@ -237,12 +237,8 @@ export function assertTokenAudience(
   tokenKind: TokenKind,
   policy: AudiencePolicy,
 ): void {
-  if (policy.verifyAudience) {
-    assertAudienceAfterJwtVerify(claims, tokenKind, policy);
-    return;
-  }
-  assertAudienceClaim(claims, tokenKind, policy);
-  assertAuthorizedParty(claims, tokenKind, policy);
+  if (!policy.verifyAudience) assertAudienceClaim(claims, tokenKind, policy);
+  assertAudienceAfterJwtVerify(claims, tokenKind, policy);
 }
 
 /**

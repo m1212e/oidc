@@ -64,13 +64,25 @@ function toAudienceList(aud: unknown): string[] {
   return [];
 }
 
+/**
+ * The first authorized-party claim the token actually carries, whatever its
+ * shape.
+ *
+ * Deliberately not "the first claim carrying a usable string": a present but
+ * malformed binding — `azp: ["other-client"]`, `client_id: ""` — must fail the
+ * comparison rather than be stepped over in favour of the next claim name,
+ * which is how a token gets bound by a claim its issuer did not intend as the
+ * binding. `null` counts as absent, being how JSON spells a claim that is not
+ * there.
+ */
 function findAuthorizedParty(
   claims: AudienceClaims,
   claimNames: readonly string[],
-): { claim: string; value: string } | undefined {
+): { claim: string; value: unknown } | undefined {
   for (const claim of claimNames) {
     const value = claims[claim];
-    if (typeof value === "string" && value.length > 0) return { claim, value };
+    if (value === undefined || value === null) continue;
+    return { claim, value };
   }
   return undefined;
 }
@@ -161,7 +173,8 @@ export function assertAuthorizedParty(
 
   if (tokenKind === "id") {
     const azp = claims.azp;
-    if (azp !== undefined) {
+    // `null` counts as absent, as it does for the access-token binding.
+    if (azp !== undefined && azp !== null) {
       if (azp !== clientId) {
         throw new OidcAudienceError(
           "id",
@@ -192,11 +205,15 @@ export function assertAuthorizedParty(
 
   const party = findAuthorizedParty(claims, authorizedPartyClaims);
   if (party) {
-    if (party.value !== clientId) {
+    if (typeof party.value !== "string" || party.value !== clientId) {
       throw new OidcAudienceError(
         "access",
         party.claim,
-        `access token "${party.claim}" (${party.value}) is not this client id (${clientId})`,
+        `access token "${party.claim}" (${
+          typeof party.value === "string"
+            ? party.value
+            : JSON.stringify(party.value)
+        }) is not this client id (${clientId})`,
       );
     }
     return;
@@ -248,17 +265,51 @@ export function assertTokenAudience(
   assertAuthorizedParty(claims, tokenKind, policy);
 }
 
+/**
+ * The policy to hold an *ID token's* introspection response to.
+ *
+ * Such a response speaks RFC 7662 vocabulary (`client_id`, `aud`) rather than
+ * ID-token vocabulary, so it gets the access-token policy — but a configured
+ * {@link AudiencePolicy.expectedAudience} names the resource this server
+ * answers to, and an ID token's `aud` is the client id by definition. Matching
+ * one against the other cannot succeed, so it would make an opaque ID token
+ * unvalidatable for every deployment that sets `expectedAudience`. Dropping it
+ * leaves the client binding, which is the check that belongs here anyway.
+ */
+export function idTokenIntrospectionPolicy(
+  policy: AudiencePolicy,
+): AudiencePolicy {
+  if (!policy.expectedAudience) return policy;
+  return { ...policy, expectedAudience: undefined };
+}
+
 export function buildAudiencePolicy(opts: {
   clientId: string;
   expectedAudience?: string | string[];
   authorizedPartyClaims?: readonly string[];
   verifyAudience?: (claims: AudienceClaims, tokenKind: TokenKind) => boolean;
 }): AudiencePolicy {
-  const expected = (
+  const supplied =
     typeof opts.expectedAudience === "string"
       ? [opts.expectedAudience]
-      : (opts.expectedAudience ?? [])
-  ).filter((entry) => entry.length > 0);
+      : (opts.expectedAudience ?? []);
+
+  // An entry that is not a usable audience value cannot be silently dropped.
+  // Dropping the only one turns the whole resource-audience binding off and
+  // falls back to comparing the authorized party to `clientId` — a different
+  // question, answered against a value the caller never configured — while the
+  // deployment looks like it pinned an audience. Dropping one of several
+  // narrows the set the caller asked for. Both are misconfigurations with no
+  // safe reading, so they are refused where they are declared.
+  const invalid = supplied.filter(
+    (entry) => typeof entry !== "string" || entry.length === 0,
+  );
+  if (invalid.length) {
+    throw new TypeError(
+      `invalid expectedAudience: every entry must be a non-empty string, and ${invalid.length} of ${supplied.length} ${invalid.length === 1 ? "is" : "are"} not. An empty audience matches nothing, so it cannot be dropped without silently replacing the resource-audience binding with the authorized-party one. Omit "expectedAudience" entirely to use that binding on purpose.`,
+    );
+  }
+  const expected = supplied;
 
   return {
     clientId: opts.clientId,

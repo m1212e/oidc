@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createOidcCore, type OidcCore } from "../../lib/core";
-import { OidcTokenValidationError } from "../../lib/errors";
+import { OidcGrantError, OidcTokenValidationError } from "../../lib/errors";
 import { OidcTokenTypeError } from "../../lib/tokenType";
 import {
   startTestOidcProvider,
@@ -126,12 +126,17 @@ describe("nonce", () => {
       "user-nonce-mismatch",
     );
 
-    // `openid-client` reports the failed comparison by code; it does not carry
-    // the claim name through, so that is the handle available to assert on.
+    // The exchange failure surfaces as an OidcGrantError so that one
+    // `instanceof OidcError` covers it; `openid-client` reports the failed
+    // comparison by code, which rides along as the cause.
     const err = (await core
       .resolveSignin(callbackUrl, codeVerifier, state)
-      .catch((e: unknown) => e)) as { code?: string };
-    expect(err.code).toBe("OAUTH_JWT_CLAIM_COMPARISON_FAILED");
+      .catch((e: unknown) => e)) as OidcGrantError;
+    expect(err).toBeInstanceOf(OidcGrantError);
+    expect(err.grant).toBe("authorization_code");
+    expect((err.cause as { code?: string }).code).toBe(
+      "OAUTH_JWT_CLAIM_COMPARISON_FAILED",
+    );
   });
 
   test("rejects an ID token carrying no nonce when one was sent", async () => {
@@ -149,8 +154,11 @@ describe("nonce", () => {
     // rejected as an invalid response rather than quietly accepted.
     const err = (await core
       .resolveSignin(callbackUrl, codeVerifier, state)
-      .catch((e: unknown) => e)) as { code?: string };
-    expect(err.code).toBe("OAUTH_INVALID_RESPONSE");
+      .catch((e: unknown) => e)) as OidcGrantError;
+    expect(err).toBeInstanceOf(OidcGrantError);
+    expect((err.cause as { code?: string }).code).toBe(
+      "OAUTH_INVALID_RESPONSE",
+    );
   });
 
   test("a login started before the nonce existed still completes", async () => {
@@ -332,15 +340,15 @@ describe("processTokens token-type binding", () => {
 describe("processTokens rejects partially-validated token sets", () => {
   test("throws when one supplied token validated and the other never could", async () => {
     const { tokens } = await login("user-partial");
-    // Signed with a key the provider's JWKS doesn't have, so JWKS verification
-    // fails and introspection reports it inactive. The id token beside it is
-    // genuine — validating only that one would hand back a `user` while
+    // Signed with a key the provider's JWKS doesn't have. The id token beside
+    // it is genuine — validating only that one would hand back a `user` while
     // silently dropping an access token nobody could verify.
     const forgedAccessToken = await idp.sign(
       { sub: "user-partial", azp: idp.clientId },
       { badKid: true },
     );
 
+    const introspectionCallsBefore = idp.calls.introspection;
     const err = (await core
       .processTokens({
         access_token: forgedAccessToken,
@@ -350,13 +358,41 @@ describe("processTokens rejects partially-validated token sets", () => {
 
     expect(err).toBeInstanceOf(OidcTokenValidationError);
     expect(err.tokenKinds).toEqual(["access"]);
-    // Every strategy that failed is reported, not just the last one.
+    expect(err.failures.map((failure) => failure.stage)).toEqual([
+      "JWT verification",
+    ]);
+    expect(err.message).toContain("access token JWT verification failed");
+    expect(err.cause).toBeDefined();
+    // A JWT the issuer's own JWKS rejected is not introspected under the
+    // default `"opaque-only"` mode: the AS has nothing to add about a
+    // structured token, and asking anyway would let any bearer string an
+    // attacker sends cost an outbound request.
+    expect(idp.calls.introspection).toBe(introspectionCallsBefore);
+  });
+
+  test("still reports every strategy that ran when introspection is 'auto'", async () => {
+    const eager = await createOidcCore({
+      issuer: idp.issuer,
+      clientId: idp.clientId,
+      development: true,
+      introspection: "auto",
+    });
+    const forgedAccessToken = await idp.sign(
+      { sub: "user-partial-auto", azp: idp.clientId },
+      { badKid: true },
+    );
+
+    const introspectionCallsBefore = idp.calls.introspection;
+    const err = (await eager
+      .processTokens({ access_token: forgedAccessToken })
+      .catch((e: unknown) => e)) as OidcTokenValidationError;
+
+    expect(err).toBeInstanceOf(OidcTokenValidationError);
     expect(err.failures.map((failure) => failure.stage)).toEqual([
       "JWT verification",
       "introspection",
     ]);
-    expect(err.message).toContain("access token JWT verification failed");
-    expect(err.cause).toBeDefined();
+    expect(idp.calls.introspection).toBe(introspectionCallsBefore + 1);
   });
 
   test("names both tokens when neither validated", async () => {

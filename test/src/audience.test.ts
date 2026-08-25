@@ -1,5 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { OidcAudienceError } from "../../lib/audience";
+import {
+  assertTokenAudience,
+  buildAudiencePolicy,
+  idTokenIntrospectionPolicy,
+  OidcAudienceError,
+} from "../../lib/audience";
 import { createOidcCore, type OidcCore } from "../../lib/core";
 import {
   startTestOidcProvider,
@@ -189,6 +194,32 @@ describe("access token audience — backstop", () => {
 });
 
 describe("expectedAudience", () => {
+  test("refuses an entry that is not a usable audience value", () => {
+    // Silently dropping the only entry left the policy comparing the
+    // authorized party to `clientId` instead — a different question, against a
+    // value the caller never configured — while the deployment read as though
+    // it had pinned a resource audience.
+    for (const expectedAudience of [
+      "",
+      [""],
+      ["api://orders", ""],
+      [undefined as unknown as string],
+    ]) {
+      expect(() =>
+        buildAudiencePolicy({ clientId: "my-app", expectedAudience }),
+      ).toThrowError(TypeError);
+    }
+    // An empty list is "not configured", which is a coherent thing to mean.
+    expect(
+      buildAudiencePolicy({ clientId: "my-app", expectedAudience: [] })
+        .expectedAudience,
+    ).toBeUndefined();
+    expect(
+      buildAudiencePolicy({ clientId: "my-app", expectedAudience: "api://a" })
+        .expectedAudience,
+    ).toEqual(["api://a"]);
+  });
+
   test("accepts a resource-bound token with no authorized-party claim", async () => {
     const bound = await createOidcCore({
       issuer: idp.issuer,
@@ -392,5 +423,101 @@ describe("escape hatches", () => {
     await expect(
       custom.processTokens({ id_token: denied }),
     ).rejects.toBeInstanceOf(OidcAudienceError);
+  });
+});
+
+describe("idTokenIntrospectionPolicy", () => {
+  test("drops a resource audience an ID token could never carry", () => {
+    const policy = buildAudiencePolicy({
+      clientId: "my-app",
+      expectedAudience: "api://orders",
+    });
+    const introspected = {
+      active: true,
+      sub: "u",
+      client_id: "my-app",
+      // What an AS reports for an ID token: the audience is the client.
+      aud: "my-app",
+    };
+
+    // Held to the access-token policy as-is, the resource audience makes this
+    // unvalidatable — "api://orders" is not something an ID token ever says.
+    expect(() => assertTokenAudience(introspected, "access", policy)).toThrow(
+      OidcAudienceError,
+    );
+    // With the resource audience dropped, the client binding still applies.
+    expect(() =>
+      assertTokenAudience(
+        introspected,
+        "access",
+        idTokenIntrospectionPolicy(policy),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertTokenAudience(
+        { ...introspected, client_id: "another-app" },
+        "access",
+        idTokenIntrospectionPolicy(policy),
+      ),
+    ).toThrow(OidcAudienceError);
+  });
+
+  test("is a no-op when no resource audience is configured", () => {
+    const policy = buildAudiencePolicy({ clientId: "my-app" });
+    expect(idTokenIntrospectionPolicy(policy)).toBe(policy);
+  });
+});
+
+describe("a malformed authorized-party claim is not stepped over", () => {
+  const policy = buildAudiencePolicy({ clientId: "test-client" });
+
+  test("refuses an azp that is present but not a string", () => {
+    // The claim the issuer meant as the binding is there; it just is not a
+    // usable one. Skipping to the next claim name would let the token be bound
+    // by a claim its issuer did not intend for that, so it fails instead.
+    expect(() =>
+      assertTokenAudience(
+        { azp: ["test-client"], client_id: "test-client", sub: "u" },
+        "access",
+        policy,
+      ),
+    ).toThrow(OidcAudienceError);
+  });
+
+  test("refuses an empty azp", () => {
+    expect(() =>
+      assertTokenAudience(
+        { azp: "", client_id: "test-client", sub: "u" },
+        "access",
+        policy,
+      ),
+    ).toThrow(OidcAudienceError);
+  });
+
+  test("treats a null azp as absent, as JSON spells it", () => {
+    expect(() =>
+      assertTokenAudience(
+        { azp: null, client_id: "test-client", sub: "u" },
+        "access",
+        policy,
+      ),
+    ).not.toThrow();
+  });
+
+  test("and the same in an id token", () => {
+    expect(() =>
+      assertTokenAudience(
+        { azp: ["test-client"], aud: "test-client", sub: "u" },
+        "id",
+        policy,
+      ),
+    ).toThrow(OidcAudienceError);
+    expect(() =>
+      assertTokenAudience(
+        { azp: null, aud: "test-client", sub: "u" },
+        "id",
+        policy,
+      ),
+    ).not.toThrow();
   });
 });

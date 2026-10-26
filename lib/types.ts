@@ -3,6 +3,7 @@ import type { IntrospectionResponse, UserInfoResponse } from "openid-client";
 import { Decode, type Static, type TSchema, Type } from "typebox";
 import { Compile } from "typebox/compile";
 import { Value } from "typebox/value";
+import type { Actor } from "./delegation";
 import { OidcClaimsError, OidcStateError } from "./errors";
 
 const nullable = <T extends TSchema>(t: T) =>
@@ -160,6 +161,12 @@ export type ValidationResult = {
   user: OIDCUser;
   accessTokenClaims: AccessTokenClaims;
   idTokenClaims: IdTokenClaims;
+  /**
+   * The RFC 8693 delegation chain, current actor first: who is acting on
+   * the subject's behalf. Empty unless the token is delegated, which
+   * {@link OidcCoreOptions.delegation} has to allow.
+   */
+  actors: Actor[];
 };
 
 // A verification flag is only meaningful from the token that supplied its value, so it is never mixed across tokens.

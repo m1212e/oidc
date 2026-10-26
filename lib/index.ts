@@ -11,6 +11,7 @@ export {
   OidcAudienceError,
 } from "./audience";
 export type {
+  ExchangeTokenInput,
   OidcCore,
   OidcCoreOptions,
   ProcessTokensInput,
@@ -27,6 +28,8 @@ export {
   resolveDevelopment,
   resolveJwksUri,
 } from "./core";
+export type { Actor, DelegationPolicy } from "./delegation";
+export { actorsOf, OidcDelegationError } from "./delegation";
 export type {
   RefreshedTokenSet,
   TokenKind,
@@ -39,11 +42,13 @@ export {
   OidcGrantError,
   OidcInputError,
   OidcLogoutError,
+  OidcProviderUnavailableError,
   OidcStateError,
   OidcSubjectError,
   OidcTokenError,
   OidcTokenValidationError,
   OidcUserInfoError,
+  providerUnavailable,
 } from "./errors";
 export type { Logger, LogLevel } from "./logger";
 export { buildLogger } from "./logger";
@@ -55,6 +60,8 @@ export {
   OidcReturnToError,
   returnToFromUrl,
 } from "./returnTo";
+export type { TenantPolicy } from "./tenant";
+export { OidcTenantError } from "./tenant";
 export type { TokenTypePolicy } from "./tokenType";
 export {
   assertIntrospectedAccessToken,

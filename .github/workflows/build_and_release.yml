@@ -20,6 +20,8 @@ jobs:
         run: bunx biome ci
       - name: Run typecheck
         run: bun run typecheck
+      - name: Run fallow
+        run: bun run fallow --format github-annotations
       - name: Run Trivy scanner on fs
         uses: aquasecurity/trivy-action@0.35.0
         with:
@@ -32,8 +34,6 @@ jobs:
           severity: "CRITICAL,HIGH"
       - name: Run build
         run: bun run build
-        env:
-          REF_NAME: ${{ github.ref_name }}
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:

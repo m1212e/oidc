@@ -321,7 +321,7 @@ describe("createOidcCore applies both at construction", () => {
       ).toBe(false);
 
       const off = recordingLogger();
-      await createOidcCore({
+      const offline = await createOidcCore({
         issuer: idp.issuer,
         clientId: "test-client",
         development: true,
@@ -331,6 +331,10 @@ describe("createOidcCore applies both at construction", () => {
       expect(
         off.warnings.some((line) => line.includes("no token will validate")),
       ).toBe(true);
+      // And it doesn't: nothing local to verify against, nothing remote either.
+      await expect(
+        offline.processTokens({ access_token: "a.b.c" }),
+      ).rejects.toThrow(/no validation strategy was available/);
     } finally {
       await idp.close();
     }

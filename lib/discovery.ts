@@ -23,7 +23,7 @@ export const DEFAULT_SIGNING_ALGORITHMS: readonly string[] = [
 ];
 
 // HS* keys are never published in a JWKS, so advertising them would only widen what is accepted.
-export function isAsymmetricAlgorithm(alg: string): boolean {
+function isAsymmetricAlgorithm(alg: string): boolean {
   return /^(RS|PS|ES|Ed)/.test(alg);
 }
 

@@ -102,6 +102,32 @@ const url = await oidc.getLogoutUrl({
 });
 ```
 
+## Token exchange, impersonation and delegation
+
+`exchangeToken` performs an RFC 8693 token exchange at the token endpoint. With an `actorToken` the issued token is a delegation: it names the actor in its `act` claim.
+
+```ts
+const tokens = await oidc.exchangeToken({
+  subjectToken, // the token of the user the new one is for
+  actorToken: session.access_token, // optional: who is acting
+  resource: "https://api.example.com", // or audience, scope, requestedTokenType
+  additionalParameters: { requested_subject: userId }, // provider specific, never overrides the standard ones
+});
+```
+
+`processTokens` refuses delegated tokens (an `act` claim on either token) unless the `delegation` option allows them. Pass `delegation` to a single `processTokens` call to allow exactly one actor, e.g. for an impersonation session bound to the admin's own session:
+
+```ts
+const result = await oidc.processTokens({
+  access_token: impersonation.access_token,
+  delegation: (actors) => actors[0]?.sub === adminSession.user.sub,
+  requireActor: true,
+});
+result.actors; // [{ sub: "admin-1" }], current actor first
+```
+
+A policy function is only consulted for delegated tokens: a token without `act` passes it. Add `requireActor: true` when an actor is the point, as for an impersonation session.
+
 ## Other methods
 
 ```ts
@@ -123,6 +149,8 @@ await oidc.fetchUserInfoFromIssuer({ accessToken, expectedSubject: user.sub });
 | `scope` (on `startSignin`)     | `"openid profile email offline_access"`    | set `"openid profile email"` if you don't want a refresh token                                     |
 | `introspection`                | `"opaque-only"`                            | `"auto"`: also introspect JWTs that fail locally. `"never"`: never call the introspection endpoint |
 | `requireIntrospectedTokenType` | `true`                                     | set `false` if your provider's introspection omits `token_type`                                    |
+| `delegation`                   | `"reject"`                                 | accept tokens with an `act` claim: `"allow"`, or `(actors, kind) => boolean`                       |
+| `allowedTenants`               |                                            | required for Entra ID's `/common` or `/organizations`: tenant ids (`tid`), or `"any"`              |
 | `accessTokenTyp`               |                                            | require a JWT `typ` header, e.g. `"at+jwt"`                                                        |
 | `idTokenOnlyClaims`            | `["nonce", "at_hash", "c_hash", "s_hash"]` |                                                                                                    |
 | `signingAlgorithms`            | from discovery                             | restrict accepted algorithms, e.g. `["RS256"]`                                                     |
@@ -150,9 +178,11 @@ try {
 | Error                                                        | Thrown when                                                             |
 | ------------------------------------------------------------ | ----------------------------------------------------------------------- |
 | `OidcTokenValidationError`                                   | a token could not be validated                                          |
+| `OidcProviderUnavailableError`                               | the provider could not be reached; keep the session and answer 503      |
+| `OidcDelegationError`, `OidcTenantError`                     | the `act` chain or the tenant is not allowed                            |
 | `OidcTokenError` (`OidcAudienceError`, `OidcTokenTypeError`) | a token is valid but not meant for this client or not the expected kind |
 | `OidcSubjectError`                                           | tokens belong to different users                                        |
-| `OidcGrantError`                                             | code exchange or refresh failed                                         |
+| `OidcGrantError`                                             | code exchange, refresh or token exchange failed                         |
 | `OidcStateError`                                             | the stored `state` was modified                                         |
 | `OidcReturnToError`                                          | `returnTo` / redirect URI is not allowed                                |
 | `OidcInputError`                                             | invalid arguments                                                       |

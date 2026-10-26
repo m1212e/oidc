@@ -1,18 +1,30 @@
 import {
+  type Actor,
+  actorsOf,
+  assertDelegationAllowed,
+  buildDelegationPolicy,
+  type DelegationPolicy,
+  OidcDelegationError,
+} from "../delegation";
+import {
   attachRefreshedTokens,
   OidcInputError,
+  OidcProviderUnavailableError,
   OidcSubjectError,
   OidcTokenValidationError,
+  providerUnavailable,
   type RefreshedTokenSet,
   type TokenKind,
   type TokenValidationFailure,
 } from "../errors";
 import type { Logger } from "../logger";
+import { assertTenantAllowed, resolvedIssuer } from "../tenant";
 import {
   introspectTokens,
   looksLikeJwt,
   subjectOf,
   unverifiedSubject,
+  type VerifiedClaimsCheck,
   verifyTokensLocally,
 } from "../tokenValidation";
 import {
@@ -25,6 +37,13 @@ import type { CoreContext } from "./context";
 import { jwtVerifyOptions } from "./grant";
 import type { ProcessTokensInput, ProcessTokensResult } from "./options";
 
+/**
+ * `undefined` means the caller doesn't have this token at all and it's
+ * skipped. Anything else, `null` or `""`, means the caller does have a
+ * slot for it but it came out empty (an unset cookie read as `null`, a
+ * template literal that resolved to `""`), which is a bug worth surfacing
+ * rather than silently validating fewer tokens than intended.
+ */
 function assertOptionalToken(
   value: string | null | undefined,
   label: string,
@@ -40,6 +59,11 @@ function assertOptionalToken(
   return value;
 }
 
+/**
+ * Warns once that a sender-constrained access token (one with a `cnf`
+ * claim, i.e. DPoP or mTLS bound) is being accepted as a plain bearer
+ * token, since this library has no request to check the proof against.
+ */
 function createSenderConstrainedWarning(log: Logger) {
   let warned = false;
   return (claims: AccessTokenClaims): void => {
@@ -53,154 +77,261 @@ function createSenderConstrainedWarning(log: Logger) {
   };
 }
 
+/** The tokens one validation pass looks at. */
+type TokenPair = { access?: string; id?: string };
+
+/** What one validation pass established about a {@link TokenPair}. */
+type Validation = {
+  access: AccessTokenClaims;
+  id: IdTokenClaims;
+  failures: TokenValidationFailure[];
+  /** A token failed local verification only because it expired. */
+  expired: boolean;
+};
+
+/** The checked arguments of one `processTokens` call. */
+type ProcessTokensRequest = {
+  tokens: TokenPair;
+  refreshToken: string | undefined;
+  subject: string | undefined;
+  delegation: DelegationPolicy | undefined;
+  requireActor: boolean;
+};
+
+function readProcessTokensInput(
+  input: ProcessTokensInput,
+): ProcessTokensRequest {
+  const access = assertOptionalToken(input.access_token, "access_token");
+  const id = assertOptionalToken(input.id_token, "id_token");
+  const refreshToken = assertOptionalToken(
+    input.refresh_token,
+    "refresh_token",
+  );
+  if (!access && !id && !refreshToken) {
+    throw new OidcInputError(
+      "processTokens needs an access token, an id token or a refresh token. Validating none is meaningless",
+    );
+  }
+  const { subject } = input;
+  if (subject !== undefined && (typeof subject !== "string" || !subject)) {
+    throw new OidcInputError(
+      "processTokens was given a `subject` that is not a non-empty string",
+    );
+  }
+  const delegation =
+    input.delegation === undefined
+      ? undefined
+      : buildDelegationPolicy(input.delegation);
+  return {
+    tokens: { access, id },
+    refreshToken,
+    subject,
+    delegation,
+    requireActor: input.requireActor === true,
+  };
+}
+
+/** The supplied tokens that no strategy validated. */
+function unvalidatedKinds(
+  tokens: TokenPair,
+  validation: Validation,
+): TokenKind[] {
+  const kinds: TokenKind[] = [];
+  if (tokens.access && !validation.access) kinds.push("access");
+  if (tokens.id && !validation.id) kinds.push("id");
+  return kinds;
+}
+
+/**
+ * A refresh only helps when the tokens were the problem. If the provider
+ * couldn't be reached, it would spend the refresh token on a set that
+ * can't validate either.
+ */
+function worthRefreshing(tokens: TokenPair, validation: Validation): boolean {
+  const unvalidated = unvalidatedKinds(tokens, validation);
+  return (
+    unvalidated.length > 0 &&
+    !providerUnavailable(unvalidated, validation.failures)
+  );
+}
+
+/**
+ * Builds `processTokens`: validates an access and/or id token, falling
+ * back from local JWKS verification to introspection, and refreshing once
+ * if needed.
+ *
+ * Pass a `refresh_token` so an expired or unverifiable token set can be
+ * refreshed automatically. Pass `subject` (the `sub` you have on file) so a
+ * refresh can't quietly hand back a different user's tokens. Without it,
+ * a mismatch only logs a warning.
+ *
+ * When {@link ProcessTokensResult.refreshed} is `true`, persist
+ * `refreshedTokens` in place of the old token set. If this throws after a
+ * refresh happened, the new token set is attached to the error as
+ * `err.refreshedTokens`. Persist that too, or the session gets stuck.
+ *
+ * Call this once per request, not concurrently for the same session:
+ * concurrent calls against an expired token set can each try to spend the
+ * same refresh token, and some providers revoke the whole session when
+ * that happens.
+ */
 export function createProcessTokens(
   ctx: CoreContext,
   refresh: (args: { refreshToken: string }) => Promise<RefreshedTokenSet>,
 ) {
   const warnIfSenderConstrained = createSenderConstrainedWarning(ctx.log);
 
-  function worthIntrospecting(token: string): boolean {
+  function verifiedClaimsCheck(
+    delegationPolicy: DelegationPolicy,
+  ): VerifiedClaimsCheck {
+    return (claims, tokenKind) => {
+      assertTenantAllowed(claims, tokenKind, ctx.tenantPolicy);
+      assertDelegationAllowed(claims, tokenKind, delegationPolicy);
+    };
+  }
+
+  /** See {@link OidcCoreOptions.introspection}. */
+  function worthIntrospecting(token: string | undefined): boolean {
+    if (!token || ctx.introspectionMode === "never") return false;
     return (
-      ctx.introspectionMode !== "never" &&
-      (ctx.introspectionMode === "auto" || !ctx.jwks || !looksLikeJwt(token))
+      ctx.introspectionMode === "auto" || !ctx.jwks || !looksLikeJwt(token)
     );
   }
 
+  /** Strategy 1, when the issuer has a JWKS to verify against. */
+  async function verifyLocally(
+    tokens: TokenPair,
+    assertVerifiedClaims: VerifiedClaimsCheck,
+  ): Promise<Validation> {
+    if (!ctx.jwks) {
+      return { access: undefined, id: undefined, failures: [], expired: false };
+    }
+    const local = await verifyTokensLocally(
+      ctx.jwks,
+      tokens,
+      (tokenKind, token) => jwtVerifyOptions(ctx, tokenKind, token),
+      ctx.tokenTypePolicy,
+      ctx.audiencePolicy,
+      assertVerifiedClaims,
+      ctx.log,
+    );
+    return {
+      access: local.accessTokenValue,
+      id: local.idTokenValue,
+      failures: local.failures,
+      expired: local.expired,
+    };
+  }
+
+  /** Strategy 2, for whichever tokens strategy 1 left unvalidated. */
+  async function introspectRemaining(
+    tokens: TokenPair,
+    validation: Validation,
+    assertVerifiedClaims: VerifiedClaimsCheck,
+  ): Promise<Validation> {
+    const which = {
+      access: !validation.access && worthIntrospecting(tokens.access),
+      id: !validation.id && worthIntrospecting(tokens.id),
+    };
+    if (!which.access && !which.id) return validation;
+
+    ctx.log.debug(
+      "[oidc] could not verify tokens locally, trying introspection...",
+    );
+    const introspected = await introspectTokens(
+      ctx.config,
+      tokens,
+      which,
+      ctx.tokenTypePolicy,
+      ctx.audiencePolicy,
+      assertVerifiedClaims,
+      ctx.log,
+    );
+    return {
+      access: validation.access ?? introspected.accessTokenValue,
+      id: validation.id ?? introspected.idTokenValue,
+      failures: validation.failures.concat(introspected.failures),
+      expired: validation.expired,
+    };
+  }
+
   /**
-   * Validates the tokens and returns the user, refreshing once if a `refresh_token` is given and validation fails.
-   * @example const { user, refreshed, refreshedTokens } = await oidc.processTokens({ access_token, id_token, refresh_token });
+   * One validation pass. An expired token with a refresh token at hand
+   * goes straight to the refresh instead of also trying introspection.
    */
+  async function validate(
+    tokens: TokenPair,
+    refreshable: boolean,
+    assertVerifiedClaims: VerifiedClaimsCheck,
+  ): Promise<Validation> {
+    const local = await verifyLocally(tokens, assertVerifiedClaims);
+    if (local.expired && refreshable) return local;
+    return introspectRemaining(tokens, local, assertVerifiedClaims);
+  }
+
   return async function processTokens(
     input: ProcessTokensInput,
   ): Promise<ProcessTokensResult> {
-    const access_token = assertOptionalToken(
-      input.access_token,
-      "access_token",
-    );
-    const id_token = assertOptionalToken(input.id_token, "id_token");
-    const refresh_token = assertOptionalToken(
-      input.refresh_token,
-      "refresh_token",
-    );
-    const { subject } = input;
-
-    if (!access_token && !id_token && !refresh_token) {
-      throw new OidcInputError(
-        "processTokens needs an access token, an id token or a refresh token. Validating none is meaningless",
-      );
-    }
-    if (subject !== undefined && (typeof subject !== "string" || !subject)) {
-      throw new OidcInputError(
-        "processTokens was given a `subject` that is not a non-empty string",
-      );
-    }
-
-    let currentAccessToken = access_token;
-    let currentIdToken = id_token;
+    const { tokens, refreshToken, subject, delegation, requireActor } =
+      readProcessTokensInput(input);
+    const check = verifiedClaimsCheck(delegation ?? ctx.delegationPolicy);
     let newTokens: RefreshedTokenSet | undefined;
-    let accessTokenValue: AccessTokenClaims;
-    let idTokenValue: IdTokenClaims;
-    let failures: TokenValidationFailure[] = [];
-    let boundSubject =
-      subject ?? unverifiedSubject(id_token) ?? unverifiedSubject(access_token);
+    // With only a refresh token there is nothing to validate yet, so the session is resumed from it.
+    const resumeOnly = !tokens.access && !tokens.id;
+    const refreshable = !!refreshToken && !resumeOnly;
+    const spendRefreshToken = async (why: string): Promise<TokenPair> => {
+      ctx.log.debug(`[oidc] ${why}, refreshing...`);
+      newTokens = await refresh({ refreshToken: refreshToken as string });
+      return pairOf(newTokens);
+    };
+
+    /** Refreshes once more when the tokens themselves were the problem. */
+    const lastResort = async (current: TokenPair, validation: Validation) => {
+      if (!refreshable || !worthRefreshing(current, validation)) {
+        return { current, validation };
+      }
+      const refreshed = await spendRefreshToken(
+        validation.expired
+          ? "token expired"
+          : "a token could not be validated, as a last resort",
+      );
+      return {
+        current: refreshed,
+        validation: await validate(refreshed, true, check),
+      };
+    };
 
     try {
-      // With only a refresh token there is nothing to validate yet, so the session is resumed from it.
-      if (!access_token && !id_token) {
-        ctx.log.debug(
-          "[oidc] only a refresh token was given, refreshing directly...",
-        );
-        newTokens = await refresh({ refreshToken: refresh_token as string });
-        currentAccessToken = newTokens.access_token;
-        currentIdToken = newTokens.id_token;
-      }
+      let current = resumeOnly
+        ? await spendRefreshToken("only a refresh token was given")
+        : tokens;
+      let validation = await validate(current, refreshable, check);
+      // Tokens resumed from a refresh token alone have nothing earlier to be bound to.
+      const boundSubject = resumeOnly
+        ? subject
+        : sessionSubject(subject, tokens, validation);
 
-      for (let attempt = 0; attempt < 2; attempt++) {
-        accessTokenValue = undefined;
-        idTokenValue = undefined;
-        failures = [];
-        let expired = false;
+      ({ current, validation } = await lastResort(current, validation));
 
-        if (ctx.jwks) {
-          const local = await verifyTokensLocally(
-            ctx.jwks,
-            { access: currentAccessToken, id: currentIdToken },
-            (tokenKind) => jwtVerifyOptions(ctx, tokenKind),
-            ctx.tokenTypePolicy,
-            ctx.audiencePolicy,
-            ctx.log,
-          );
-          accessTokenValue = local.accessTokenValue;
-          idTokenValue = local.idTokenValue;
-          failures = local.failures;
-          expired = local.expired;
-        }
-
-        const shortcutToRefresh = expired && !!refresh_token;
-
-        if (!shortcutToRefresh) {
-          const introspectAccess =
-            !accessTokenValue &&
-            !!currentAccessToken &&
-            worthIntrospecting(currentAccessToken);
-          const introspectId =
-            !idTokenValue &&
-            !!currentIdToken &&
-            worthIntrospecting(currentIdToken);
-
-          if (introspectAccess || introspectId) {
-            ctx.log.debug(
-              "[oidc] could not verify tokens locally, trying introspection...",
-            );
-            const introspected = await introspectTokens(
-              ctx.config,
-              { access: currentAccessToken, id: currentIdToken },
-              { access: introspectAccess, id: introspectId },
-              ctx.tokenTypePolicy,
-              ctx.audiencePolicy,
-              ctx.log,
-            );
-            accessTokenValue ??= introspected.accessTokenValue;
-            idTokenValue ??= introspected.idTokenValue;
-            failures = failures.concat(introspected.failures);
-          }
-        }
-
-        if (!newTokens && !subject) {
-          boundSubject =
-            subjectOf(accessTokenValue) ??
-            subjectOf(idTokenValue) ??
-            boundSubject;
-        }
-
-        const allValidated =
-          (!currentAccessToken || !!accessTokenValue) &&
-          (!currentIdToken || !!idTokenValue);
-        const shouldRefresh = !newTokens && !!refresh_token && !allValidated;
-        if (!shouldRefresh) break;
-
-        ctx.log.debug(
-          expired
-            ? "[oidc] token expired, refreshing directly..."
-            : "[oidc] a token could not be validated, refreshing as a last resort...",
-        );
-        newTokens = await refresh({ refreshToken: refresh_token as string });
-        currentAccessToken = newTokens.access_token;
-        currentIdToken = newTokens.id_token;
-      }
-
-      return finalizeProcessTokens({
-        currentAccessToken,
-        currentIdToken,
-        accessTokenValue,
-        idTokenValue,
-        failures,
-        newTokens,
+      assertValidated(current, validation);
+      const finalSubject = agreedSubject(validation);
+      assertSessionSubject(finalSubject, {
+        refreshed: !!newTokens,
         boundSubject,
         subject,
-        issuer: ctx.issuer,
         log: ctx.log,
-        warnIfSenderConstrained,
+      });
+      const actors = agreedActors(validation, requireActor);
+      warnIfSenderConstrained(validation.access);
+      return buildResult(validation, actors, newTokens, {
+        issuer: resolvedIssuer(
+          ctx.issuer,
+          ctx.tenantPolicy,
+          validation.access,
+          validation.id,
+        ),
+        finalSubject,
+        log: ctx.log,
       });
     } catch (err) {
       throw attachRefreshedTokens(err, newTokens);
@@ -208,40 +339,19 @@ export function createProcessTokens(
   };
 }
 
-function finalizeProcessTokens({
-  currentAccessToken,
-  currentIdToken,
-  accessTokenValue,
-  idTokenValue,
-  failures,
-  newTokens,
-  boundSubject,
-  subject,
-  issuer,
-  log,
-  warnIfSenderConstrained,
-}: {
-  currentAccessToken: string | undefined;
-  currentIdToken: string | undefined;
-  accessTokenValue: AccessTokenClaims;
-  idTokenValue: IdTokenClaims;
-  failures: TokenValidationFailure[];
-  newTokens: RefreshedTokenSet | undefined;
-  boundSubject: string | undefined;
-  subject: string | undefined;
-  issuer: string;
-  log: Logger;
-  warnIfSenderConstrained: (claims: AccessTokenClaims) => void;
-}): ProcessTokensResult {
-  const unvalidated: TokenKind[] = [];
-  if (currentAccessToken && !accessTokenValue) unvalidated.push("access");
-  if (currentIdToken && !idTokenValue) unvalidated.push("id");
-  if (unvalidated.length) {
-    throw new OidcTokenValidationError(unvalidated, failures);
-  }
+/** Throws unless every supplied token validated. */
+function assertValidated(tokens: TokenPair, validation: Validation): void {
+  const unvalidated = unvalidatedKinds(tokens, validation);
+  if (!unvalidated.length) return;
+  throw providerUnavailable(unvalidated, validation.failures)
+    ? new OidcProviderUnavailableError(unvalidated, validation.failures)
+    : new OidcTokenValidationError(unvalidated, validation.failures);
+}
 
-  const accessSub = subjectOf(accessTokenValue);
-  const idSub = subjectOf(idTokenValue);
+/** The subject the tokens name, throwing if the two name different ones. */
+function agreedSubject(validation: Validation): string | undefined {
+  const accessSub = subjectOf(validation.access);
+  const idSub = subjectOf(validation.id);
   if (accessSub && idSub && accessSub !== idSub) {
     throw new OidcSubjectError(
       `subject in access token and id token do not match (${accessSub} vs ${idSub})`,
@@ -249,42 +359,115 @@ function finalizeProcessTokens({
       idSub,
     );
   }
+  return accessSub ?? idSub;
+}
 
-  const finalSubject = accessSub ?? idSub;
-  if (
-    newTokens &&
-    boundSubject &&
-    finalSubject &&
-    finalSubject !== boundSubject
-  ) {
+/** Checks the tokens' subject against the one the session is bound to. */
+function assertSessionSubject(
+  finalSubject: string | undefined,
+  {
+    refreshed,
+    boundSubject,
+    subject,
+    log,
+  }: {
+    refreshed: boolean;
+    boundSubject: string | undefined;
+    subject: string | undefined;
+    log: Logger;
+  },
+): void {
+  if (refreshed && !boundSubject) {
+    log.warn(
+      "[oidc] refreshed a token set whose original subject could not be determined. The supplied tokens were opaque or unreadable, or there was only a refresh token, so the refreshed set could not be checked against them. Pass `subject` to processTokens to enforce it.",
+    );
+  }
+  if (!finalSubject) return;
+
+  if (refreshed && boundSubject && finalSubject !== boundSubject) {
     throw new OidcSubjectError(
       `refresh returned a token set for a different subject (${finalSubject}) than the tokens it replaced (${boundSubject}). The refresh token does not belong to this session`,
       boundSubject,
       finalSubject,
     );
   }
-
-  if (subject && finalSubject && finalSubject !== subject) {
+  if (subject && finalSubject !== subject) {
     throw new OidcSubjectError(
       `the tokens describe subject ${finalSubject}, not the ${subject} they were presented for`,
       subject,
       finalSubject,
     );
   }
+}
 
-  if (newTokens && !boundSubject) {
-    log.warn(
-      "[oidc] refreshed a token set whose original subject could not be determined. The supplied tokens were opaque or unreadable, or there was only a refresh token, so the refreshed set could not be checked against them. Pass `subject` to processTokens to enforce it.",
+/**
+ * The delegation chain of the token set. When both tokens are delegated
+ * they must name the same chain, and a chain on either one is reported, so
+ * a delegated id token next to a plain access token cannot hide its actor.
+ */
+function agreedActors(validation: Validation, required: boolean): Actor[] {
+  const access = actorsOf(validation.access, "access");
+  const id = actorsOf(validation.id, "id");
+  if (
+    access.length &&
+    id.length &&
+    JSON.stringify(access) !== JSON.stringify(id)
+  ) {
+    throw new OidcDelegationError(
+      "id",
+      id,
+      "the access token and the id token name different actor chains",
     );
   }
+  const actors = access.length ? access : id;
+  if (required && !actors.length) {
+    throw new OidcDelegationError(
+      validation.access ? "access" : "id",
+      actors,
+      "the tokens are not delegated, but an actor was required",
+    );
+  }
+  return actors;
+}
 
-  warnIfSenderConstrained(accessTokenValue);
+function pairOf(tokens: RefreshedTokenSet): TokenPair {
+  return { access: tokens.access_token, id: tokens.id_token };
+}
 
+/**
+ * The subject the supplied tokens are bound to. A caller-supplied subject is
+ * authoritative. Otherwise prefer what the tokens verifiably claim over what
+ * they merely claim.
+ */
+function sessionSubject(
+  subject: string | undefined,
+  tokens: TokenPair,
+  validation: Validation,
+): string | undefined {
+  return (
+    subject ??
+    subjectOf(validation.access) ??
+    subjectOf(validation.id) ??
+    unverifiedSubject(tokens.id) ??
+    unverifiedSubject(tokens.access)
+  );
+}
+
+function buildResult(
+  validation: Validation,
+  actors: Actor[],
+  newTokens: RefreshedTokenSet | undefined,
+  {
+    issuer,
+    finalSubject,
+    log,
+  }: { issuer: string; finalSubject: string | undefined; log: Logger },
+): ProcessTokensResult {
   const base = {
     user: parseOIDCUser({
       ...mergeTokenClaims(
-        accessTokenValue as Record<string, unknown> | undefined,
-        idTokenValue as Record<string, unknown> | undefined,
+        validation.access as Record<string, unknown> | undefined,
+        validation.id as Record<string, unknown> | undefined,
         (claim) =>
           log.warn(
             `[oidc] the access token and the id token disagree on "${claim}" for subject ${finalSubject ?? "(unknown)"}. Using the id token's value, and dropping any verification flag that did not come with it. One of the two is stale.`,
@@ -292,8 +475,9 @@ function finalizeProcessTokens({
       ),
       iss: issuer,
     }),
-    accessTokenClaims: accessTokenValue,
-    idTokenClaims: idTokenValue,
+    accessTokenClaims: validation.access,
+    idTokenClaims: validation.id,
+    actors,
   };
 
   if (newTokens) {

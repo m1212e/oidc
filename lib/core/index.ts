@@ -5,6 +5,7 @@ import {
   discovery,
 } from "openid-client";
 import { buildAudiencePolicy } from "../audience";
+import { buildDelegationPolicy } from "../delegation";
 import {
   assertDiscoveredIssuer,
   assertPkceSupported,
@@ -15,8 +16,10 @@ import {
 } from "../discovery";
 import { buildLogger } from "../logger";
 import { buildReturnToPolicy } from "../returnTo";
+import { buildTenantPolicy } from "../tenant";
 import { buildTokenTypePolicy } from "../tokenType";
 import type { CoreContext } from "./context";
+import { createExchangeToken } from "./exchange";
 import { createLogout } from "./logout";
 import { createProcessTokens } from "./processTokens";
 import { createRefresh } from "./refresh";
@@ -31,6 +34,7 @@ export {
   resolveDevelopment,
   resolveJwksUri,
 } from "../discovery";
+export type { ExchangeTokenInput } from "./exchange";
 export type {
   OidcCoreOptions,
   ProcessTokensInput,
@@ -42,7 +46,7 @@ export type {
 import type { OidcCoreOptions } from "./options";
 
 /**
- * Discovers the issuer and returns the sign-in, validation, refresh and logout functions.
+ * Discovers the issuer and returns the sign-in, validation, refresh, logout and token exchange functions.
  * @example const oidc = await createOidcCore({ issuer: "https://auth.example.com", clientId: "my-app" });
  */
 export async function createOidcCore(opts: OidcCoreOptions) {
@@ -112,6 +116,8 @@ export async function createOidcCore(opts: OidcCoreOptions) {
     issuer,
     jwks,
     audiencePolicy,
+    tenantPolicy: buildTenantPolicy(issuer, opts.allowedTenants, opts.issuer),
+    delegationPolicy: buildDelegationPolicy(opts.delegation),
     tokenTypePolicy: buildTokenTypePolicy(opts),
     returnToPolicy: buildReturnToPolicy(opts),
     introspectionMode: opts.introspection ?? "opaque-only",
@@ -128,6 +134,7 @@ export async function createOidcCore(opts: OidcCoreOptions) {
   const processTokens = createProcessTokens(ctx, refresh);
   const getLogoutUrl = createLogout(ctx);
   const fetchUserInfoFromIssuer = createUserInfoFetcher(ctx);
+  const exchangeToken = createExchangeToken(ctx);
 
   return {
     configuration: config,
@@ -137,6 +144,7 @@ export async function createOidcCore(opts: OidcCoreOptions) {
     refresh,
     getLogoutUrl,
     fetchUserInfoFromIssuer,
+    exchangeToken,
   };
 }
 

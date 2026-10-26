@@ -16,16 +16,17 @@
     "lint": "bunx biome check --write .",
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
-    "test:types": "tsc --noEmit"
+    "test:types": "tsc --noEmit",
+    "fallow": "fallow"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.3",
     "@types/bun": "^1.4.4",
     "@types/node": "^26.6.5",
     "@types/oidc-provider": "^9.12.1",
+    "fallow": "^3.36.0",
     "lefthook": "^2.2.2",
     "oidc-provider": "9.13.0",
-    "rolldown-plugin-dts": "^0.28.8",
     "tsdown": "^0.22.14",
     "typescript": "^7.0.2"
   },

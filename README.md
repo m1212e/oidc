@@ -29,7 +29,7 @@ const oidc = await createOidcCore({
 ```ts
 const { authorizationUrl, codeVerifier, state } = await oidc.startSignin({
   redirectUri: "https://app.example.com/callback",
-  returnTo: "/dashboard",
+  returnTo: "/dashboard", // or returnToFromUrl(request.url) to come back to the visited page
 });
 
 // store codeVerifier + state (e.g. in an httpOnly cookie), then:
@@ -65,7 +65,9 @@ if (result.refreshed) {
 }
 ```
 
-Pass at least one of `access_token` / `id_token`. Use `undefined` (not `null` or `""`) for tokens you don't have.
+Pass at least one token. Use `undefined` (not `null` or `""`) for tokens you don't have. With only a `refresh_token`, the session is resumed by refreshing it (pass `subject` to bind it to the expected user).
+
+`result.user` holds the standard OIDC claims. Claims some providers send under another name are filled in when missing: `preferred_username` from `username`, and `given_name` / `family_name` from `name`.
 
 > [!IMPORTANT]
 > You **must** save refreshed tokens after every `processTokens` call, including when it throws (then they are on `error.refreshedTokens`). Providers rotate refresh tokens, so the old one stops working once it has been used.

@@ -39,19 +39,12 @@ export type ResolveSigninResult = {
 
 type SubjectBinding = { subject?: string };
 
-export type ProcessTokensInput = SubjectBinding &
-  (
-    | {
-        access_token: string | null;
-        id_token?: string | null;
-        refresh_token?: string | null;
-      }
-    | {
-        access_token?: string | null;
-        id_token: string | null;
-        refresh_token?: string | null;
-      }
-  );
+// At least one token is required, which is checked at runtime.
+export type ProcessTokensInput = SubjectBinding & {
+  access_token?: string | null;
+  id_token?: string | null;
+  refresh_token?: string | null;
+};
 
 export type ProcessTokensResult = ValidationResult &
   (

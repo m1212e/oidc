@@ -84,9 +84,9 @@ export function createProcessTokens(
     );
     const { subject } = input;
 
-    if (!access_token && !id_token) {
+    if (!access_token && !id_token && !refresh_token) {
       throw new OidcInputError(
-        "processTokens needs an access token, an id token, or both. Validating neither is meaningless",
+        "processTokens needs an access token, an id token or a refresh token. Validating none is meaningless",
       );
     }
     if (subject !== undefined && (typeof subject !== "string" || !subject)) {
@@ -105,6 +105,16 @@ export function createProcessTokens(
       subject ?? unverifiedSubject(id_token) ?? unverifiedSubject(access_token);
 
     try {
+      // With only a refresh token there is nothing to validate yet, so the session is resumed from it.
+      if (!access_token && !id_token) {
+        ctx.log.debug(
+          "[oidc] only a refresh token was given, refreshing directly...",
+        );
+        newTokens = await refresh({ refreshToken: refresh_token as string });
+        currentAccessToken = newTokens.access_token;
+        currentIdToken = newTokens.id_token;
+      }
+
       for (let attempt = 0; attempt < 2; attempt++) {
         accessTokenValue = undefined;
         idTokenValue = undefined;
@@ -264,7 +274,7 @@ function finalizeProcessTokens({
 
   if (newTokens && !boundSubject) {
     log.warn(
-      "[oidc] refreshed a token set whose original subject could not be determined. The supplied tokens were opaque or unreadable, so the refreshed set could not be checked against them. Pass `subject` to processTokens to enforce it.",
+      "[oidc] refreshed a token set whose original subject could not be determined. The supplied tokens were opaque or unreadable, or there was only a refresh token, so the refreshed set could not be checked against them. Pass `subject` to processTokens to enforce it.",
     );
   }
 

@@ -4,6 +4,7 @@ import {
   assertSafeReturnTo,
   buildReturnToPolicy,
   OidcReturnToError,
+  returnToFromUrl,
 } from "../../lib/returnTo";
 
 const sameSiteOnly = buildReturnToPolicy({});
@@ -140,6 +141,24 @@ describe("assertSafeReturnTo", () => {
     expect(() =>
       assertSafeReturnTo("https://user@app.example.com/x", withOrigins),
     ).toThrow(OidcReturnToError);
+  });
+});
+
+describe("returnToFromUrl", () => {
+  test("keeps the path and query of the visited URL", () => {
+    expect(returnToFromUrl("https://app.example.com/a/b?c=1#frag")).toBe(
+      "/a/b?c=1",
+    );
+    expect(returnToFromUrl(new URL("https://app.example.com"))).toBe("/");
+  });
+
+  test("falls back to the root for paths that would leave the site", () => {
+    expect(returnToFromUrl("https://app.example.com//evil.example/x")).toBe(
+      "/",
+    );
+    expect(returnToFromUrl("https://app.example.com/%5Cevil.example")).toBe(
+      "/%5Cevil.example",
+    );
   });
 });
 

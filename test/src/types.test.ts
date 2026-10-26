@@ -118,6 +118,35 @@ describe("parseOIDCUser", () => {
     expect(user.phone_number_verified).toBe(false);
   });
 
+  test("fills standard claims a provider sends under another name", () => {
+    const user = parseOIDCUser({
+      sub: "u",
+      username: "jdoe",
+      name: "Jane Mary Doe",
+    });
+    expect(user.preferred_username).toBe("jdoe");
+    expect(user.given_name).toBe("Jane Mary");
+    expect(user.family_name).toBe("Doe");
+
+    expect(parseOIDCUser({ sub: "u", name: "Cher" }).given_name).toBe("Cher");
+    expect(
+      parseOIDCUser({ sub: "u", name: "Cher" }).family_name,
+    ).toBeUndefined();
+  });
+
+  test("never overwrites a standard claim the provider did send", () => {
+    const user = parseOIDCUser({
+      sub: "u",
+      username: "other",
+      preferred_username: "jdoe",
+      name: "Jane Doe",
+      family_name: "Smith",
+    });
+    expect(user.preferred_username).toBe("jdoe");
+    expect(user.family_name).toBe("Smith");
+    expect(user.given_name).toBeUndefined();
+  });
+
   test("reports a claim set it cannot read as an OidcError", () => {
     expect(() => parseOIDCUser({ email: "x@example.com" })).toThrow(
       OidcClaimsError,

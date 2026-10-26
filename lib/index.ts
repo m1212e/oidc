@@ -53,6 +53,7 @@ export {
   assertSafeReturnTo,
   buildReturnToPolicy,
   OidcReturnToError,
+  returnToFromUrl,
 } from "./returnTo";
 export type { TokenTypePolicy } from "./tokenType";
 export {

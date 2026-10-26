@@ -3,6 +3,7 @@ import { createOidcCore, type OidcCore } from "../../lib/core";
 import {
   OidcGrantError,
   OidcInputError,
+  OidcSubjectError,
   OidcTokenValidationError,
 } from "../../lib/errors";
 import { OidcTokenTypeError } from "../../lib/tokenType";
@@ -407,10 +408,47 @@ describe("processTokens rejects partially-validated token sets", () => {
     expect(result.idTokenClaims).toBeDefined();
   });
 
-  test("rejects a call carrying no tokens at all", async () => {
+  test("resumes a session from a refresh token alone", async () => {
+    const { tokens } = await login(
+      "user-refresh-only",
+      "openid profile email offline_access",
+    );
+
+    const result = await core.processTokens({
+      refresh_token: tokens.refresh_token as string,
+    });
+
+    expect(result.refreshed).toBe(true);
+    expect(result.refreshedTokens?.access_token).toBeTruthy();
+    expect(result.user.sub).toBe("user-refresh-only");
+  });
+
+  test("checks a refresh-token-only session against the given subject", async () => {
+    const { tokens } = await login(
+      "user-refresh-only-subject",
+      "openid profile email offline_access",
+    );
+
+    const rejection = await core
+      .processTokens({
+        refresh_token: tokens.refresh_token as string,
+        subject: "someone-else",
+      })
+      .catch((err) => err);
+
+    expect(rejection).toBeInstanceOf(OidcSubjectError);
+    // tokens for another subject are never handed back to be stored
+    expect(rejection.refreshedTokens).toBeUndefined();
+  });
+
+  test("reports an unusable refresh token as a grant error", async () => {
     await expect(
-      core.processTokens({} as { id_token: string }),
-    ).rejects.toThrow(OidcInputError);
+      core.processTokens({ refresh_token: "not-a-refresh-token" }),
+    ).rejects.toThrow(OidcGrantError);
+  });
+
+  test("rejects a call carrying no tokens at all", async () => {
+    await expect(core.processTokens({})).rejects.toThrow(OidcInputError);
   });
 
   test("an omitted access token (undefined) is skipped, not an error", async () => {

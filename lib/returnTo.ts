@@ -174,3 +174,17 @@ export function assertSafeRedirectUri(uri: string, label: string): string {
 
   return uri;
 }
+
+/**
+ * The `returnTo` for a visited URL: its path and query, or "/" when that would not be a safe
+ * same-site target (e.g. a request to "//evil.example").
+ * @example const { authorizationUrl } = await oidc.startSignin({ redirectUri, returnTo: returnToFromUrl(request.url) });
+ */
+export function returnToFromUrl(url: URL | string): string {
+  const { pathname, search } = new URL(url);
+  try {
+    return assertSafeReturnTo(pathname + search, { allowedOrigins: [] });
+  } catch {
+    return "/";
+  }
+}

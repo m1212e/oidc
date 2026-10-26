@@ -59,11 +59,40 @@ const OPTIONAL_USER_CLAIMS = Object.keys(USER_CLAIM_SCHEMAS).filter(
   (claim) => claim !== "sub",
 );
 
+// Fills standard claims some providers only send under another name (e.g. Logto's `username` and
+// single `name`). A claim the provider did send is never overwritten.
+function withStandardClaims(
+  claims: Record<string, unknown>,
+): Record<string, unknown> {
+  const filled = { ...claims };
+
+  if (
+    filled.preferred_username == null &&
+    typeof claims.username === "string"
+  ) {
+    filled.preferred_username = claims.username;
+  }
+
+  const name = typeof claims.name === "string" ? claims.name.trim() : "";
+  if (filled.given_name == null && filled.family_name == null && name) {
+    const parts = name.split(/\s+/);
+    if (parts.length > 1) {
+      filled.family_name = parts.pop();
+      filled.given_name = parts.join(" ");
+    } else {
+      filled.given_name = name;
+    }
+  }
+
+  return filled;
+}
+
 export function parseOIDCUser(value: unknown): OIDCUser {
-  const claims: Record<string, unknown> =
+  const claims: Record<string, unknown> = withStandardClaims(
     typeof value === "object" && value !== null
       ? (value as Record<string, unknown>)
-      : {};
+      : {},
+  );
 
   const candidate: Record<string, unknown> = { sub: claims.sub };
   for (const claim of OPTIONAL_USER_CLAIMS) {

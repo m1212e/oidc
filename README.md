@@ -2,6 +2,8 @@
 
 OpenID Connect login and token validation for server-side apps.
 
+Built for the **Authorization Code flow with PKCE** (sign-in), plus validating bearer tokens in APIs. It wraps the whole flow in a few calls and is strict by default: it verifies JWTs locally, falls back to introspection for opaque tokens, refreshes automatically, and rejects tokens issued to another client, the wrong kind of token, mixed-up users and open redirects.
+
 ```sh
 npm i @m1212e/oidc
 ```
@@ -47,8 +49,6 @@ const { tokens, returnTo } = await oidc.resolveSignin({
 return Response.redirect(returnTo);
 ```
 
-Need a refresh token? Add `scope: "openid profile email offline_access"` to `startSignin`.
-
 ## Authenticate requests
 
 ```ts
@@ -67,7 +67,29 @@ if (result.refreshed) {
 
 Pass at least one of `access_token` / `id_token`. Use `undefined` (not `null` or `""`) for tokens you don't have.
 
-If `processTokens` throws after a refresh already happened, the new tokens are on `error.refreshedTokens`. Save them, since the old refresh token may now be invalid.
+> [!IMPORTANT]
+> You **must** save refreshed tokens after every `processTokens` call, including when it throws (then they are on `error.refreshedTokens`). Providers rotate refresh tokens, so the old one stops working once it has been used.
+
+### Bearer tokens (APIs)
+
+```ts
+const oidc = await createOidcCore({
+  issuer: "https://auth.example.com",
+  clientId: "my-api",
+  expectedAudience: "https://api.example.com", // the `aud` your API's tokens carry
+});
+
+const token = request.headers.get("authorization")?.replace(/^Bearer /i, "");
+if (!token) return new Response("Unauthorized", { status: 401 });
+
+try {
+  const { user } = await oidc.processTokens({ access_token: token });
+} catch {
+  return new Response("Unauthorized", { status: 401 });
+}
+```
+
+Without `expectedAudience`, the token's `azp` / `client_id` claim must equal `clientId`.
 
 ## Sign out
 
@@ -96,7 +118,7 @@ await oidc.fetchUserInfoFromIssuer({ accessToken, expectedSubject: user.sub });
 | `authorizedPartyClaims` | `["azp", "client_id", "cid", "appid"]` | your provider puts the client id in a different claim |
 | `verifyAudience` | | you need a custom check: `(claims, kind) => claims.aud === "x"` |
 | `allowedReturnToOrigins` | `[]` | `returnTo` should allow absolute URLs, e.g. `["https://admin.example.com"]` |
-| `scope` (on `startSignin`) | `"openid profile email"` | |
+| `scope` (on `startSignin`) | `"openid profile email offline_access"` | set `"openid profile email"` if you don't want a refresh token |
 | `introspection` | `"opaque-only"` | `"auto"`: also introspect JWTs that fail locally. `"never"`: never call the introspection endpoint |
 | `requireIntrospectedTokenType` | `true` | set `false` if your provider's introspection omits `token_type` |
 | `accessTokenTyp` | | require a JWT `typ` header, e.g. `"at+jwt"` |

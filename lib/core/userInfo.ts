@@ -3,6 +3,10 @@ import { OidcInputError, OidcUserInfoError } from "../errors";
 import type { CoreContext } from "./context";
 
 export function createUserInfoFetcher(ctx: CoreContext) {
+  /**
+   * Fetches the UserInfo endpoint, checking the response is for `expectedSubject`.
+   * @example const info = await oidc.fetchUserInfoFromIssuer({ accessToken, expectedSubject: user.sub });
+   */
   return async function fetchUserInfoFromIssuer({
     accessToken,
     expectedSubject,

@@ -10,6 +10,10 @@ import type { CoreContext } from "./context";
 import { assertGrantedIdToken } from "./grant";
 
 export function createRefresh(ctx: CoreContext) {
+  /**
+   * Exchanges a refresh token for a new token set.
+   * @example const tokens = await oidc.refresh({ refreshToken, expectedSubject: user.sub });
+   */
   return async function refresh({
     refreshToken,
     expectedSubject,

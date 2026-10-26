@@ -18,6 +18,10 @@ import { assertGrantedIdToken } from "./grant";
 import type { ResolveSigninResult, StartSigninResult } from "./options";
 
 export function createSignin(ctx: CoreContext) {
+  /**
+   * Builds the authorization URL. Store `codeVerifier` and `state` until the callback.
+   * @example const { authorizationUrl, codeVerifier, state } = await oidc.startSignin({ redirectUri, returnTo: "/" });
+   */
   async function startSignin({
     redirectUri,
     returnTo,
@@ -57,6 +61,10 @@ export function createSignin(ctx: CoreContext) {
     return { codeVerifier, authorizationUrl, state };
   }
 
+  /**
+   * Exchanges the callback's code for tokens and returns the `returnTo` passed to `startSignin`.
+   * @example const { tokens, returnTo } = await oidc.resolveSignin({ callbackUrl: new URL(req.url), codeVerifier, expectedState: state });
+   */
   async function resolveSignin({
     callbackUrl,
     codeVerifier,

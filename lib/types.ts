@@ -10,6 +10,7 @@ const nullable = <T extends TSchema>(t: T) =>
 
 const LowercaseEmail = Decode(Type.String(), (s) => s.toLowerCase());
 
+// Some providers (e.g. Cognito) send verification flags as "true"/"false" strings or 0/1.
 const VerifiedFlag = Decode(
   Type.Union([Type.Boolean(), Type.String(), Type.Number()]),
   (value): boolean => {
@@ -69,6 +70,7 @@ export function parseOIDCUser(value: unknown): OIDCUser {
     const supplied = claims[claim];
     if (supplied === undefined) continue;
     const schema = USER_CLAIM_SCHEMAS[claim] as TSchema;
+    // A malformed optional claim is dropped rather than failing the whole login.
     if (Value.Check(schema, supplied)) candidate[claim] = supplied;
   }
 
@@ -131,6 +133,7 @@ export type ValidationResult = {
   idTokenClaims: IdTokenClaims;
 };
 
+// A verification flag is only meaningful from the token that supplied its value, so it is never mixed across tokens.
 const VOUCHED_CLAIMS = [
   ["email", "email_verified"],
   ["phone_number", "phone_number_verified"],

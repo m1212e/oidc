@@ -146,6 +146,7 @@ export function assertAudienceAfterJwtVerify(
   assertAuthorizedParty(claims, tokenKind, policy);
 }
 
+// For claims that did not pass through jose's `audience` option (introspection, grant responses).
 export function assertTokenAudience(
   claims: AudienceClaims,
   tokenKind: TokenKind,

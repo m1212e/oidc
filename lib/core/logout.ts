@@ -4,6 +4,10 @@ import { assertSafeRedirectUri } from "../returnTo";
 import type { CoreContext } from "./context";
 
 export function createLogout(ctx: CoreContext) {
+  /**
+   * Builds the provider's RP-initiated logout URL.
+   * @example const url = await oidc.getLogoutUrl({ postLogoutRedirectUri: "https://app.example.com/", idTokenHint: id_token });
+   */
   return async function getLogoutUrl({
     postLogoutRedirectUri,
     idTokenHint,

@@ -1,5 +1,6 @@
 import { OidcError } from "./errors";
 
+// Resolving against a dummy origin reveals relative-looking values such as "//evil.com" that leave the site.
 const PROBE_ORIGIN = "https://return-to.invalid";
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: catching them is the point

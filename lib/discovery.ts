@@ -22,6 +22,7 @@ export const DEFAULT_SIGNING_ALGORITHMS: readonly string[] = [
   "Ed25519",
 ];
 
+// HS* keys are never published in a JWKS, so advertising them would only widen what is accepted.
 export function isAsymmetricAlgorithm(alg: string): boolean {
   return /^(RS|PS|ES|Ed)/.test(alg);
 }
@@ -42,6 +43,7 @@ export function resolveJwksUri(jwksUri: string, development: boolean): URL {
   );
 }
 
+// Multi-tenant Microsoft endpoints publish a templated issuer ("{tenantid}") that never equals the request URL.
 function issuerMatchExempt(url: URL): boolean {
   return (
     url.origin === "https://login.microsoftonline.com" ||
@@ -70,6 +72,7 @@ export function assertDiscoveredIssuer(
   const suffix = withoutTrailingSlash(
     path.slice(wellKnownAt + WELL_KNOWN.length),
   );
+  // A single-segment suffix means the well-known path was appended to the issuer, so the issuer must equal the prefix.
   const appended = !suffix.includes("/") && !issuerMatchExempt(configuredUrl);
 
   if (appended) {

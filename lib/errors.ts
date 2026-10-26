@@ -137,6 +137,7 @@ export function attachRefreshedTokens<E>(
   if (
     refreshedTokens &&
     error instanceof OidcError &&
+    // Tokens for a different subject must not be handed back for the caller to store.
     !(error instanceof OidcSubjectError)
   ) {
     error.refreshedTokens = refreshedTokens;

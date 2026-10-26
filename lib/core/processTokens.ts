@@ -66,6 +66,10 @@ export function createProcessTokens(
     );
   }
 
+  /**
+   * Validates the tokens and returns the user, refreshing once if a `refresh_token` is given and validation fails.
+   * @example const { user, refreshed, refreshedTokens } = await oidc.processTokens({ access_token, id_token, refresh_token });
+   */
   return async function processTokens(
     input: ProcessTokensInput,
   ): Promise<ProcessTokensResult> {

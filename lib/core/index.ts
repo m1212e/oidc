@@ -41,6 +41,10 @@ export type {
 
 import type { OidcCoreOptions } from "./options";
 
+/**
+ * Discovers the issuer and returns the sign-in, validation, refresh and logout functions.
+ * @example const oidc = await createOidcCore({ issuer: "https://auth.example.com", clientId: "my-app" });
+ */
 export async function createOidcCore(opts: OidcCoreOptions) {
   const log = buildLogger(opts.logger, opts.logLevel);
   const development = resolveDevelopment(opts.development);

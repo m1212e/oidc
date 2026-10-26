@@ -8,12 +8,8 @@ import { OidcClaimsError, OidcStateError } from "./errors";
 const nullable = <T extends TSchema>(t: T) =>
   Type.Optional(Type.Union([Type.Null(), t]));
 
-// Lowercases emails on the way in. No Encode side needed since this library
-// never writes emails back out.
 const LowercaseEmail = Decode(Type.String(), (s) => s.toLowerCase());
 
-// Some providers send `*_verified` as "true"/"1" instead of a boolean.
-// Anything that isn't clearly true decodes to false.
 const VerifiedFlag = Decode(
   Type.Union([Type.Boolean(), Type.String(), Type.Number()]),
   (value): boolean => {
@@ -24,19 +20,9 @@ const VerifiedFlag = Decode(
 );
 
 const OIDCUserSchema = Type.Object({
-  /**
-   * The issuer that vouches for {@link OIDCUser.sub}.
-   *
-   * `sub` is only unique within one issuer, so key accounts on `iss` and
-   * `sub` together, not `sub` alone, if you support more than one IdP.
-   */
   iss: Type.Optional(Type.String({ minLength: 1 })),
   sub: Type.String({ minLength: 1 }),
   email: nullable(LowercaseEmail),
-  /**
-   * Whether the issuer vouches for {@link OIDCUser.email}. Treat a missing
-   * value the same as `false`. Only `true` means verified.
-   */
   email_verified: nullable(VerifiedFlag),
   name: nullable(Type.String()),
   given_name: nullable(Type.String()),
@@ -72,20 +58,12 @@ const OPTIONAL_USER_CLAIMS = Object.keys(USER_CLAIM_SCHEMAS).filter(
   (claim) => claim !== "sub",
 );
 
-/**
- * Reads claims into an {@link OIDCUser}, dropping anything outside that
- * shape (roles, internal ids, and other extra claims your provider sends).
- * Throws {@link OidcClaimsError} if `sub` is missing or not a string. Any
- * other malformed claim is just dropped.
- */
 export function parseOIDCUser(value: unknown): OIDCUser {
   const claims: Record<string, unknown> =
     typeof value === "object" && value !== null
       ? (value as Record<string, unknown>)
       : {};
 
-  // Checked against each claim's schema before decoding, so a bad value
-  // (e.g. `sub: null`) gets dropped instead of silently coerced.
   const candidate: Record<string, unknown> = { sub: claims.sub };
   for (const claim of OPTIONAL_USER_CLAIMS) {
     const supplied = claims[claim];
@@ -110,17 +88,11 @@ export function parseOIDCUser(value: unknown): OIDCUser {
 const OIDCFlowStateSchema = Type.Object({
   visitedUrl: Type.String(),
   random: Type.String(),
-  /** The OIDC `nonce` sent with the authorization request. */
   nonce: Type.Optional(Type.String()),
 });
 export type OIDCFlowState = Static<typeof OIDCFlowStateSchema>;
 const CompiledOIDCFlowState = Compile(OIDCFlowStateSchema);
 
-/**
- * Reads back the OAuth `state` this library minted. Throws
- * {@link OidcStateError} if the value isn't valid JSON or doesn't match
- * what {@link OidcCore.startSignin} produced.
- */
 export function parseOIDCFlowState(value: string): OIDCFlowState {
   let parsed: unknown;
   try {
@@ -132,7 +104,6 @@ export function parseOIDCFlowState(value: string): OIDCFlowState {
     );
   }
   try {
-    // Clean first to strip stray extra properties. Decode alone won't.
     return CompiledOIDCFlowState.Decode(CompiledOIDCFlowState.Clean(parsed));
   } catch (err) {
     const [first] = [...CompiledOIDCFlowState.Errors(parsed)];
@@ -160,20 +131,11 @@ export type ValidationResult = {
   idTokenClaims: IdTokenClaims;
 };
 
-/** Claim/verified-flag pairs, as `[value, flag]`. */
 const VOUCHED_CLAIMS = [
   ["email", "email_verified"],
   ["phone_number", "phone_number_verified"],
 ] as const;
 
-/**
- * Merges access and id token claims into what {@link parseOIDCUser} reads,
- * with the id token winning where both set a value. Pass `onConflict` to be
- * notified when both tokens disagree on the same claim.
- *
- * Merges claim by claim rather than spreading wholesale, so a verified flag
- * never ends up attached to a value from the other token.
- */
 export function mergeTokenClaims(
   accessTokenClaims: Record<string, unknown> | undefined,
   idTokenClaims: Record<string, unknown> | undefined,
@@ -193,7 +155,6 @@ export function mergeTokenClaims(
       onConflict(value);
     }
 
-    // Only read the flag from whichever token's value actually survived.
     const source =
       id[value] !== undefined
         ? id

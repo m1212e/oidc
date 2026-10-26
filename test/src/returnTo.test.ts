@@ -28,8 +28,6 @@ describe("assertSafeReturnTo", () => {
   });
 
   test("refuses the targets that only look relative", () => {
-    // A protocol-relative URL, plus the backslash spellings a URL parser
-    // normalizes into one. Resolving before deciding is the whole point.
     for (const hostile of [
       "//evil.example.com",
       "//evil.example.com/path",
@@ -81,7 +79,6 @@ describe("assertSafeReturnTo", () => {
     expect(() =>
       assertSafeReturnTo(undefined as unknown as string, sameSiteOnly),
     ).toThrow(OidcReturnToError);
-    // Not a path and not an absolute URL.
     expect(() => assertSafeReturnTo("dashboard", sameSiteOnly)).toThrow(
       OidcReturnToError,
     );
@@ -106,14 +103,12 @@ describe("assertSafeReturnTo", () => {
     expect(
       assertSafeReturnTo("https://app.example.com/dashboard", withOrigins),
     ).toBe("https://app.example.com/dashboard");
-    // Same host, wrong scheme and wrong port are different origins.
     expect(() =>
       assertSafeReturnTo("http://app.example.com/dashboard", withOrigins),
     ).toThrow(OidcReturnToError);
     expect(() =>
       assertSafeReturnTo("https://app.example.com:8443/x", withOrigins),
     ).toThrow(OidcReturnToError);
-    // The classic prefix/suffix confusions.
     expect(() =>
       assertSafeReturnTo("https://app.example.com.evil.test/x", withOrigins),
     ).toThrow(OidcReturnToError);
@@ -123,13 +118,10 @@ describe("assertSafeReturnTo", () => {
     expect(() =>
       assertSafeReturnTo("https://app.example.com@evil.test/x", withOrigins),
     ).toThrow(OidcReturnToError);
-    // Relative paths keep working alongside an allowlist.
     expect(assertSafeReturnTo("/dashboard", withOrigins)).toBe("/dashboard");
   });
 
   test("refuses a scheme that only borrows an allowed origin", () => {
-    // `new URL("blob:https://app.example.com/x").origin` is the *inner* URL's
-    // origin, so an allowlist check on its own would wave this through.
     for (const hostile of [
       "blob:https://app.example.com/0d5a-1",
       "filesystem:https://app.example.com/temporary/x",
@@ -142,8 +134,6 @@ describe("assertSafeReturnTo", () => {
   });
 
   test("refuses credentials embedded in an otherwise allowed target", () => {
-    // The origin here really is the allowed one. This is the spelling the
-    // allowlist alone cannot catch, unlike `https://app.example.com@evil.test`.
     expect(() =>
       assertSafeReturnTo("https://user:pw@app.example.com/x", withOrigins),
     ).toThrow(OidcReturnToError);
@@ -177,7 +167,6 @@ describe("assertSafeRedirectUri", () => {
     for (const uri of [
       "https://app.example.com/callback",
       "https://app.example.com/logged-out?from=logout",
-      // Local development: the app's own callback, over plain HTTP.
       "http://localhost:3000/callback",
     ]) {
       expect(assertSafeRedirectUri(uri, "redirectUri")).toBe(uri);

@@ -3,18 +3,6 @@ import { OidcLogoutError } from "../errors";
 import { assertSafeRedirectUri } from "../returnTo";
 import type { CoreContext } from "./context";
 
-/**
- * Builds an RP-initiated logout URL. Redirect the user to it to end their
- * session at the IdP.
- *
- * `postLogoutRedirectUri` must be an absolute http(s) URL, registered with
- * your provider. Pass `idTokenHint` when you still have the id token.
- * Some providers otherwise show a confirmation page instead of logging out
- * directly.
- *
- * Throws {@link OidcLogoutError} if the issuer advertises no
- * `end_session_endpoint`, since there is then no URL to build.
- */
 export function createLogout(ctx: CoreContext) {
   return async function getLogoutUrl({
     postLogoutRedirectUri,

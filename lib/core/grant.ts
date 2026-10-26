@@ -11,7 +11,6 @@ import {
 import type { TokenKind } from "../errors";
 import type { CoreContext } from "./context";
 
-/** jose verification options: signature, issuer, audience, expiry, and required claims. */
 export function jwtVerifyOptions(
   ctx: CoreContext,
   tokenKind: TokenKind,
@@ -28,7 +27,6 @@ export function jwtVerifyOptions(
   };
 }
 
-/** Runs the audience policy against a granted id token's claims. */
 export function assertGrantedIdToken(
   ctx: CoreContext,
   tokens: TokenEndpointResponse & TokenEndpointResponseHelpers,

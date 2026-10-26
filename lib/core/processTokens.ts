@@ -25,13 +25,6 @@ import type { CoreContext } from "./context";
 import { jwtVerifyOptions } from "./grant";
 import type { ProcessTokensInput, ProcessTokensResult } from "./options";
 
-/**
- * `undefined` means the caller doesn't have this token at all and it's
- * skipped. Anything else, `null` or `""`, means the caller does have a
- * slot for it but it came out empty (an unset cookie read as `null`, a
- * template literal that resolved to `""`), which is a bug worth surfacing
- * rather than silently validating fewer tokens than intended.
- */
 function assertOptionalToken(
   value: string | null | undefined,
   label: string,
@@ -47,11 +40,6 @@ function assertOptionalToken(
   return value;
 }
 
-/**
- * Warns once that a sender-constrained access token (one with a `cnf`
- * claim, i.e. DPoP or mTLS bound) is being accepted as a plain bearer
- * token, since this library has no request to check the proof against.
- */
 function createSenderConstrainedWarning(log: Logger) {
   let warned = false;
   return (claims: AccessTokenClaims): void => {
@@ -65,33 +53,12 @@ function createSenderConstrainedWarning(log: Logger) {
   };
 }
 
-/**
- * Builds `processTokens`: validates an access and/or id token, falling
- * back from local JWKS verification to introspection, and refreshing once
- * if needed.
- *
- * Pass a `refresh_token` so an expired or unverifiable token set can be
- * refreshed automatically. Pass `subject` (the `sub` you have on file) so a
- * refresh can't quietly hand back a different user's tokens. Without it,
- * a mismatch only logs a warning.
- *
- * When {@link ProcessTokensResult.refreshed} is `true`, persist
- * `refreshedTokens` in place of the old token set. If this throws after a
- * refresh happened, the new token set is attached to the error as
- * `err.refreshedTokens`. Persist that too, or the session gets stuck.
- *
- * Call this once per request, not concurrently for the same session:
- * concurrent calls against an expired token set can each try to spend the
- * same refresh token, and some providers revoke the whole session when
- * that happens.
- */
 export function createProcessTokens(
   ctx: CoreContext,
   refresh: (args: { refreshToken: string }) => Promise<RefreshedTokenSet>,
 ) {
   const warnIfSenderConstrained = createSenderConstrainedWarning(ctx.log);
 
-  /** See {@link OidcCoreOptions.introspection}. */
   function worthIntrospecting(token: string): boolean {
     return (
       ctx.introspectionMode !== "never" &&
@@ -130,13 +97,10 @@ export function createProcessTokens(
     let accessTokenValue: AccessTokenClaims;
     let idTokenValue: IdTokenClaims;
     let failures: TokenValidationFailure[] = [];
-    // A caller-supplied subject is authoritative. Otherwise start from what
-    // the tokens claim and upgrade to a verified subject once available.
     let boundSubject =
       subject ?? unverifiedSubject(id_token) ?? unverifiedSubject(access_token);
 
     try {
-      // At most two passes: the tokens as given, then a refreshed set.
       for (let attempt = 0; attempt < 2; attempt++) {
         accessTokenValue = undefined;
         idTokenValue = undefined;
@@ -188,8 +152,6 @@ export function createProcessTokens(
           }
         }
 
-        // A verified subject beats the unverified read, but a
-        // caller-declared subject always wins.
         if (!newTokens && !subject) {
           boundSubject =
             subjectOf(accessTokenValue) ??
@@ -232,7 +194,6 @@ export function createProcessTokens(
   };
 }
 
-/** Final checks after the validation loop: nothing dropped, subjects agree. */
 function finalizeProcessTokens({
   currentAccessToken,
   currentIdToken,

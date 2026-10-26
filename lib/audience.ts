@@ -1,21 +1,7 @@
-/**
- * Audience and authorized-party validation.
- *
- * `aud` says who a token is for. `azp` says who asked for it. Configure
- * this via {@link OidcCoreOptions.expectedAudience},
- * {@link OidcCoreOptions.authorizedPartyClaims}, or
- * {@link OidcCoreOptions.verifyAudience} on `createOidcCore`. You shouldn't
- * need to call the functions here directly.
- */
-
 import { OidcTokenError, type TokenKind } from "./errors";
 
 export type { TokenKind } from "./errors";
 
-/**
- * Claims a provider may use to name the client a token was issued to,
- * checked in this order. The first one present wins.
- */
 export const DEFAULT_AUTHORIZED_PARTY_CLAIMS: readonly string[] = [
   "azp",
   "client_id",
@@ -23,18 +9,15 @@ export const DEFAULT_AUTHORIZED_PARTY_CLAIMS: readonly string[] = [
   "appid",
 ];
 
-/** Anything claim-shaped: a verified JWT payload or an introspection response. */
 export type AudienceClaims = Readonly<Record<string, unknown>>;
 
 export type AudiencePolicy = {
   clientId: string;
-  /** Normalized to a non-empty list, or `undefined` when not configured. */
   expectedAudience?: string[];
   authorizedPartyClaims: readonly string[];
   verifyAudience?: (claims: AudienceClaims, tokenKind: TokenKind) => boolean;
 };
 
-/** Thrown when a token cannot be bound to this client. */
 export class OidcAudienceError extends OidcTokenError {
   constructor(tokenKind: TokenKind, claim: string, message: string) {
     super(tokenKind, claim, message);
@@ -42,7 +25,6 @@ export class OidcAudienceError extends OidcTokenError {
   }
 }
 
-/** Normalizes `aud` (string, string array, or absent) to a list. */
 function toAudienceList(aud: unknown): string[] {
   if (typeof aud === "string") return [aud];
   if (Array.isArray(aud))
@@ -50,11 +32,6 @@ function toAudienceList(aud: unknown): string[] {
   return [];
 }
 
-/**
- * The first authorized-party claim the token actually carries. A malformed
- * value still counts as present (and fails the comparison later) rather
- * than falling through to the next claim name.
- */
 function findAuthorizedParty(
   claims: AudienceClaims,
   claimNames: readonly string[],
@@ -67,11 +44,6 @@ function findAuthorizedParty(
   return undefined;
 }
 
-/**
- * What to pass as jose's `audience` verification option. Returns `undefined`
- * when `aud` shouldn't be checked at all (nothing configured, or
- * {@link AudiencePolicy.verifyAudience} replacing the whole policy).
- */
 export function audienceVerifyOption(
   policy: AudiencePolicy,
   tokenKind: TokenKind,
@@ -80,10 +52,6 @@ export function audienceVerifyOption(
   return tokenKind === "id" ? policy.clientId : policy.expectedAudience;
 }
 
-/**
- * The `aud` check {@link audienceVerifyOption} would hand to jose, run
- * directly for claims that never go through `jwtVerify`.
- */
 export function assertAudienceClaim(
   claims: AudienceClaims,
   tokenKind: TokenKind,
@@ -103,12 +71,6 @@ export function assertAudienceClaim(
   }
 }
 
-/**
- * Binds a token to this client via `azp` (id tokens) or an
- * authorized-party claim (access tokens). For access tokens, set
- * {@link AudiencePolicy.expectedAudience} if you're a resource server
- * checking `aud` instead. See {@link OidcCoreOptions.expectedAudience}.
- */
 export function assertAuthorizedParty(
   claims: AudienceClaims,
   tokenKind: TokenKind,
@@ -166,10 +128,6 @@ export function assertAuthorizedParty(
   );
 }
 
-/**
- * Runs the authorized-party check for a token jose already verified `aud`
- * for via {@link audienceVerifyOption}.
- */
 export function assertAudienceAfterJwtVerify(
   claims: AudienceClaims,
   tokenKind: TokenKind,
@@ -188,7 +146,6 @@ export function assertAudienceAfterJwtVerify(
   assertAuthorizedParty(claims, tokenKind, policy);
 }
 
-/** The complete audience policy, for claims jose never saw (introspection responses). */
 export function assertTokenAudience(
   claims: AudienceClaims,
   tokenKind: TokenKind,
@@ -198,19 +155,6 @@ export function assertTokenAudience(
   assertAudienceAfterJwtVerify(claims, tokenKind, policy);
 }
 
-/**
- * The audience policy for an introspection response presented as an id
- * token.
- *
- * An id token's `aud` names this client, held to exactly that, the same
- * rule the offline path applies. But RFC 7662 leaves `aud` optional in an
- * introspection response, and a provider that omits it names the client in
- * `client_id` instead. So a response without `aud` may still be bound by
- * an authorized-party claim, and only one carrying neither is unbindable.
- * Any configured {@link AudiencePolicy.expectedAudience} is ignored here: a
- * resource audience describes access tokens, and an id token never carries
- * one.
- */
 export function assertIntrospectedIdTokenAudience(
   claims: AudienceClaims,
   policy: AudiencePolicy,
@@ -235,8 +179,6 @@ export function assertIntrospectedIdTokenAudience(
     );
   }
 
-  // `azp` is the claim OIDC defines for this, whatever the configured list
-  // covers for access tokens.
   const claimNames = policy.authorizedPartyClaims.includes("azp")
     ? policy.authorizedPartyClaims
     : ["azp", ...policy.authorizedPartyClaims];

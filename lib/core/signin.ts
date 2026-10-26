@@ -17,25 +17,14 @@ import type { CoreContext } from "./context";
 import { assertGrantedIdToken } from "./grant";
 import type { ResolveSigninResult, StartSigninResult } from "./options";
 
-/** The PKCE authorization-code flow. */
 export function createSignin(ctx: CoreContext) {
   async function startSignin({
     redirectUri,
     returnTo,
     scope = "openid profile email",
   }: {
-    /** This app's own OAuth callback endpoint. */
     redirectUri: string;
-    /**
-     * Where to send the user after a successful login: a same-site path
-     * such as `"/dashboard"`, or an absolute URL on an origin listed in
-     * {@link OidcCoreOptions.allowedReturnToOrigins}.
-     */
     returnTo: string;
-    /**
-     * Space-separated OAuth scopes to request. Defaults to
-     * `"openid profile email"` and must include `openid`.
-     */
     scope?: string;
   }): Promise<StartSigninResult> {
     assertSafeReturnTo(returnTo, ctx.returnToPolicy);
@@ -73,11 +62,8 @@ export function createSignin(ctx: CoreContext) {
     codeVerifier,
     expectedState,
   }: {
-    /** The full callback URL the IdP redirected to, including its query string. */
     callbackUrl: URL;
-    /** The `codeVerifier` `startSignin` returned, stored and handed back unmodified. */
     codeVerifier: string;
-    /** The `state` `startSignin` returned, stored and handed back unmodified. */
     expectedState: string;
   }): Promise<ResolveSigninResult> {
     if (typeof codeVerifier !== "string" || codeVerifier.length === 0) {

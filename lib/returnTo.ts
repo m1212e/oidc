@@ -1,26 +1,11 @@
-/**
- * Post-login redirect validation.
- *
- * By default, `returnTo` must be a same-site path (e.g. `"/dashboard"`). To
- * allow redirecting to another origin after login, list it in
- * {@link OidcCoreOptions.allowedReturnToOrigins}.
- */
-
 import { OidcError } from "./errors";
 
-/** Used to resolve a relative `returnTo` and check where it actually navigates. */
 const PROBE_ORIGIN = "https://return-to.invalid";
 
-/**
- * Control characters, spaces, and backslashes (read as a slash by URL
- * parsers, so a quiet way to write `//evil.example`).
- */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: catching them is the point
 const FORBIDDEN_CHARACTERS = /[\u0000-\u0020\u007f\\]/;
 
-/** Thrown when a post-login redirect target isn't one this configuration permits. */
 export class OidcReturnToError extends OidcError {
-  /** The rejected value, for logging. Never redirect to it. */
   readonly returnTo: string;
 
   constructor(returnTo: string, message: string) {
@@ -31,7 +16,6 @@ export class OidcReturnToError extends OidcError {
 }
 
 export type ReturnToPolicy = {
-  /** Origins an absolute `returnTo` may name. Empty means same-site paths only. */
   allowedOrigins: readonly string[];
 };
 
@@ -70,10 +54,6 @@ function assertNoForbiddenCharacters(value: string): void {
   );
 }
 
-/**
- * A relative target must be a path beginning with a single `/`. Rejects
- * values that only look relative, like `//evil.example`.
- */
 function assertSafeRelativeReturnTo(returnTo: string): void {
   let resolved: URL;
   try {
@@ -92,10 +72,6 @@ function assertSafeRelativeReturnTo(returnTo: string): void {
   }
 }
 
-/**
- * An absolute target must be an `http`/`https` URL without embedded
- * credentials, on an origin the allowlist names.
- */
 function assertSafeAbsoluteReturnTo(
   returnTo: string,
   policy: ReturnToPolicy,
@@ -134,13 +110,6 @@ function assertSafeAbsoluteReturnTo(
   }
 }
 
-/**
- * Validates a post-login redirect target and returns it unchanged, or
- * throws {@link OidcReturnToError}. Accepts a same-site path
- * (`"/dashboard"`) or, if listed in
- * {@link OidcCoreOptions.allowedReturnToOrigins}, an absolute `http`/`https`
- * URL. `startSignin` and `resolveSignin` already call this for you.
- */
 export function assertSafeReturnTo(
   returnTo: string,
   policy: ReturnToPolicy,
@@ -163,11 +132,6 @@ export function assertSafeReturnTo(
   return returnTo;
 }
 
-/**
- * Validates an absolute redirect URI (an OAuth `redirect_uri` or
- * `post_logout_redirect_uri`) and returns it unchanged, or throws
- * {@link OidcReturnToError}.
- */
 export function assertSafeRedirectUri(uri: string, label: string): string {
   if (typeof uri !== "string" || uri.length === 0) {
     throw new OidcReturnToError(

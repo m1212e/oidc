@@ -117,16 +117,12 @@ describe("access token slot", () => {
     expect(() =>
       assertTokenTypeAfterJwtVerify(claims, { typ: "JWT" }, "access", strict),
     ).toThrowError(/"typ" header/);
-    // An absent header cannot satisfy an explicitly required typ.
     expect(() =>
       assertTokenTypeAfterJwtVerify(claims, noHeader, "access", strict),
     ).toThrowError(/absent/);
   });
 
   test("any header value can be pinned, whatever it spells", () => {
-    // This pins the *header*, not the claim. Keycloak's header says "JWT".
-    // Its "Bearer" is a payload claim, checked separately, so pinning
-    // "Bearer" here would reject every Keycloak access token.
     const strict = buildTokenTypePolicy({ accessTokenTyp: "Bearer" });
     expect(() =>
       assertTokenTypeAfterJwtVerify(
@@ -176,9 +172,6 @@ describe("id token slot", () => {
   });
 
   test("rejects any header typ that names another kind, in either slot", () => {
-    // The mirror of the case above, and of the `typ` *claim* rules: pinning a
-    // header is a configuration decision, but believing one that names the
-    // wrong kind never was. Nothing is configured here.
     for (const typ of ["id+jwt", "id_token", "refresh+jwt", "logout+jwt"]) {
       expect(() =>
         assertTokenTypeAfterJwtVerify({ sub: "u" }, { typ }, "access", policy),
@@ -192,9 +185,6 @@ describe("id token slot", () => {
   });
 
   test("reads a media type the same however its application/ prefix is spelled", () => {
-    // RFC 7515 §4.1.9 makes the prefix optional, so both spellings must reject
-    // the same way. A table keyed only on the bare form used to answer
-    // `undefined` for the prefixed one, letting the wrong kind through.
     for (const bare of [
       "id+jwt",
       "refresh+jwt",
@@ -221,14 +211,11 @@ describe("id token slot", () => {
         assertTokenTypeAfterJwtVerify({ sub: "u" }, { typ }, "id", policy),
       ).toThrowError(/"typ" header/);
     }
-    // Both spellings of the *claim* too, which is the same lookup.
     for (const typ of ["id+jwt", "application/id+jwt"]) {
       expect(() =>
         assertTokenTypeFromClaims({ sub: "u", typ }, "access", policy),
       ).toThrowError(/"typ"/);
     }
-    // Only one leading `application/`, and only that prefix: neither of these
-    // is the media type it resembles.
     for (const typ of ["application/application/id+jwt", "foo/id+jwt"]) {
       expect(() =>
         assertTokenTypeAfterJwtVerify({ sub: "u" }, { typ }, "access", policy),
@@ -237,9 +224,6 @@ describe("id token slot", () => {
   });
 
   test("still says nothing about a header typ it does not recognize", () => {
-    // "JWT" is what Auth0, Entra ID and stock Keycloak send on both kinds, and
-    // an absent header is legal. Neither is evidence, so neither rejects.
-    // That gap is what `accessTokenTyp` exists to close.
     for (const slot of ["access", "id"] as const) {
       for (const header of [{ typ: "JWT" }, { typ: "dpop+jwt" }, {}]) {
         expect(() =>
@@ -247,7 +231,6 @@ describe("id token slot", () => {
         ).not.toThrow();
       }
     }
-    // And the kind it does name, matching the slot, is fine.
     expect(() =>
       assertTokenTypeAfterJwtVerify(
         { sub: "u", azp: "my-app" },
@@ -304,8 +287,6 @@ describe("the typ claim, which is where Keycloak names the kind", () => {
   );
 
   test("says nothing about a value it does not recognize", () => {
-    // A bare "JWT" is what Keycloak's *header* says, and what several
-    // providers put in the claim too. Not evidence of anything, so no rejection.
     for (const slot of ["access", "id"] as const) {
       for (const typ of ["JWT", "Registration Access Token", "", 7, null]) {
         expect(() =>
@@ -334,8 +315,6 @@ describe("assertIntrospectedAccessToken", () => {
   });
 
   test("refuses a response that names no type at all", () => {
-    // The refresh-token case in practice: RFC 7662 reports `token_type` only
-    // for tokens that have one.
     const err = (() => {
       try {
         assertIntrospectedAccessToken(active, policy);
@@ -373,7 +352,6 @@ describe("assertIntrospectedAccessToken", () => {
   test("waiving the requirement waives only the absent-type case", () => {
     const lax = buildTokenTypePolicy({ requireIntrospectedTokenType: false });
     expect(() => assertIntrospectedAccessToken(active, lax)).not.toThrow();
-    // A response that positively says "refresh token" is still refused.
     expect(() =>
       assertIntrospectedAccessToken({ ...active, typ: "Refresh" }, lax),
     ).toThrow(OidcTokenTypeError);
@@ -406,8 +384,6 @@ describe("assertIntrospectedIdToken", () => {
   });
 
   test("refuses a response that names nothing at all", () => {
-    // The refresh-token case in practice: one endpoint answers for every kind,
-    // and a response that will not say which is not one to authenticate on.
     const err = (() => {
       try {
         assertIntrospectedIdToken({ active: true, sub: "u" }, policy);
@@ -425,7 +401,6 @@ describe("assertIntrospectedIdToken", () => {
     expect(() =>
       assertIntrospectedIdToken({ active: true, sub: "u" }, lax),
     ).not.toThrow();
-    // Still not a licence for a response that names another kind outright.
     expect(() =>
       assertIntrospectedIdToken(
         { active: true, sub: "u", typ: "Refresh" },
@@ -435,8 +410,6 @@ describe("assertIntrospectedIdToken", () => {
   });
 
   test("does not hold an ID token to the ID-token-only claims", () => {
-    // `nonce` and `at_hash` belong on an ID token. Echoing them is not
-    // evidence against one.
     expect(() =>
       assertIntrospectedIdToken(
         { active: true, sub: "u", typ: "ID", nonce: "n", at_hash: "h" },
@@ -450,9 +423,6 @@ describe("the kind-name table is not the prototype chain", () => {
   const policy = buildTokenTypePolicy({});
 
   test('a "typ" naming an Object.prototype member is unknown, not a kind', () => {
-    // Looked up in an object, `constructor` and `__proto__` answer from
-    // Object.prototype, not the kind table. This has to fail closed because
-    // the check rejects it, not by accident of what it wasn't equal to.
     for (const value of ["constructor", "__proto__", "toString", "valueOf"]) {
       expect(() =>
         assertTokenTypeFromClaims({ sub: "u", typ: value }, "access", policy),
@@ -464,8 +434,6 @@ describe("the kind-name table is not the prototype chain", () => {
   });
 
   test("an introspection response cannot name its kind that way either", () => {
-    // Unknown is unknown: the affirmative requirement is what rejects these,
-    // not a comparison against something off the prototype.
     for (const value of ["constructor", "__proto__", "hasOwnProperty"]) {
       expect(() =>
         assertIntrospectedAccessToken(

@@ -2,11 +2,6 @@ import { fetchUserInfo } from "openid-client";
 import { OidcInputError, OidcUserInfoError } from "../errors";
 import type { CoreContext } from "./context";
 
-/**
- * Fetches claims from the issuer's UserInfo endpoint. `expectedSubject`
- * should be the `sub` you already validated this access token for. The
- * response is checked against it.
- */
 export function createUserInfoFetcher(ctx: CoreContext) {
   return async function fetchUserInfoFromIssuer({
     accessToken,

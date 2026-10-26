@@ -9,15 +9,6 @@ import { subjectOf } from "../tokenValidation";
 import type { CoreContext } from "./context";
 import { assertGrantedIdToken } from "./grant";
 
-/**
- * Exchanges a refresh token for a new token set, and validates the id
- * token that comes back.
- *
- * Pass `expectedSubject` (the `sub` you have on file for this session)
- * whenever the result will replace a stored token set. This catches a
- * refresh token that belongs to someone else's session. Throws
- * {@link OidcSubjectError} on a mismatch.
- */
 export function createRefresh(ctx: CoreContext) {
   return async function refresh({
     refreshToken,

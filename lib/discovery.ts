@@ -1,25 +1,12 @@
-/**
- * Issuer-discovery helpers used internally by `createOidcCore` to validate
- * a provider's metadata at startup.
- */
-
 import type { Configuration } from "openid-client";
 import type { Logger } from "./logger";
 
-/**
- * Resolves {@link OidcCoreOptions.development} from `NODE_ENV` when not
- * passed explicitly. Only `NODE_ENV=development` turns it on.
- */
 export function resolveDevelopment(development?: boolean): boolean {
   if (development !== undefined) return development;
   if (typeof process === "undefined") return false;
   return process.env?.NODE_ENV === "development";
 }
 
-/**
- * Fallback signing algorithms used when the issuer advertises none.
- * Asymmetric only, since offline verification uses a public JWKS key.
- */
 export const DEFAULT_SIGNING_ALGORITHMS: readonly string[] = [
   "RS256",
   "RS384",
@@ -35,12 +22,10 @@ export const DEFAULT_SIGNING_ALGORITHMS: readonly string[] = [
   "Ed25519",
 ];
 
-/** Whether an `alg` is one a public JWKS key can verify. */
 export function isAsymmetricAlgorithm(alg: string): boolean {
   return /^(RS|PS|ES|Ed)/.test(alg);
 }
 
-/** Rejects the issuer's `jwks_uri` unless it can be fetched safely. */
 export function resolveJwksUri(jwksUri: string, development: boolean): URL {
   let url: URL;
   try {
@@ -57,7 +42,6 @@ export function resolveJwksUri(jwksUri: string, development: boolean): URL {
   );
 }
 
-/** Hosts `openid-client` exempts from its own issuer comparison. */
 function issuerMatchExempt(url: URL): boolean {
   return (
     url.origin === "https://login.microsoftonline.com" ||
@@ -68,7 +52,6 @@ function issuerMatchExempt(url: URL): boolean {
 const WELL_KNOWN = "/.well-known/";
 const withoutTrailingSlash = (value: string) => value.replace(/\/+$/, "");
 
-/** Confirms the metadata document names the issuer that was actually asked for. */
 export function assertDiscoveredIssuer(
   configured: string,
   discovered: string,
@@ -82,7 +65,6 @@ export function assertDiscoveredIssuer(
 
   const path = configuredUrl.origin + configuredUrl.pathname;
   const wellKnownAt = path.indexOf(WELL_KNOWN);
-  // No well-known segment: `openid-client` already did this comparison.
   if (wellKnownAt === -1) return;
 
   const suffix = withoutTrailingSlash(
@@ -113,7 +95,6 @@ export function assertDiscoveredIssuer(
   );
 }
 
-/** Rejects an issuer that cannot honour the PKCE challenge {@link OidcCore.startSignin} sends. */
 export function assertPkceSupported(
   methods: string[] | undefined,
   clientSecret: string | undefined,
@@ -134,7 +115,6 @@ export function assertPkceSupported(
   );
 }
 
-/** jose's duration grammar, minus forms a tolerance can't use. */
 const DURATION_MULTIPLIERS: Record<string, number> = {
   s: 1,
   m: 60,
@@ -146,7 +126,6 @@ const DURATION_MULTIPLIERS: Record<string, number> = {
 const DURATION =
   /^(\d+|\d+\.\d+) ?(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|years?|yrs?|y)$/i;
 
-/** Resolves {@link OidcCoreOptions.clockTolerance} to whole seconds. */
 export function resolveClockTolerance(
   clockTolerance?: string | number,
 ): number {
@@ -174,10 +153,6 @@ export function resolveClockTolerance(
   );
 }
 
-/**
- * The JWS algorithms offline verification accepts. An explicit list is
- * taken as-is. A discovered one is filtered to asymmetric algorithms only.
- */
 export function resolveSigningAlgorithms(
   config: Configuration,
   signingAlgorithms: string[] | undefined,

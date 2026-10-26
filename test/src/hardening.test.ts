@@ -1,10 +1,3 @@
-/**
- * Regression tests for the substitutions and state-handling faults that the
- * validation chain used to let through. Each one is driven against the real
- * provider, so the token being substituted is a token the provider actually
- * issued rather than a hand-rolled approximation.
- */
-
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createOidcCore, type OidcCore } from "../../lib/core";
 import {
@@ -67,10 +60,6 @@ describe("refresh tokens are not access tokens", () => {
     const refreshToken = tokens.refresh_token as string;
     expect(refreshToken).toBeTruthy();
 
-    // Opaque, so it reaches introspection, where `active: true`, this
-    // client's `client_id` and the user's `sub` all check out. Only the
-    // absence of an affirmative token type gives it away, and without that
-    // check a 14-day credential would pass as a 1-hour one.
     const err = (await core
       .processTokens({ access_token: refreshToken })
       .catch((e: unknown) => e)) as OidcTokenTypeError;
@@ -89,8 +78,6 @@ describe("refresh tokens are not access tokens", () => {
       requireIntrospectedTokenType: false,
     });
 
-    // Pinning the escape hatch's cost: with the requirement off, the very same
-    // refresh token is accepted. Anyone setting this must know that.
     const result = await lax.processTokens({
       access_token: tokens.refresh_token as string,
     });
@@ -108,9 +95,6 @@ describe("refresh tokens are not access tokens", () => {
 
 describe("token-type claims that name the kind", () => {
   test("refuses a Keycloak-shaped refresh token in the access slot", async () => {
-    // Keycloak signs refresh tokens with the same key as everything else and
-    // names the kind in a payload `typ` claim. The JWS header just says
-    // "JWT", so pinning the header cannot catch this one.
     const refreshShaped = await idp.sign({
       sub: "user-typ-refresh",
       azp: idp.clientId,
@@ -125,8 +109,6 @@ describe("token-type claims that name the kind", () => {
   });
 
   test("refuses a Keycloak-shaped ID token in the access slot", async () => {
-    // No nonce, no at_hash: the previously documented gap. The `typ` claim
-    // closes it wherever the provider sets one.
     const idShaped = await idp.sign({
       sub: "user-typ-id",
       azp: idp.clientId,
@@ -156,8 +138,6 @@ describe("token-type claims that name the kind", () => {
   });
 
   test("ignores a typ claim that names nothing it knows", async () => {
-    // Providers put their own vocabulary here. An unrecognized value is not
-    // evidence either way and must not become a rejection.
     const token = await idp.sign({
       sub: "user-typ-unknown",
       azp: idp.clientId,
@@ -169,13 +149,6 @@ describe("token-type claims that name the kind", () => {
 });
 
 describe("a spent refresh token is never lost", () => {
-  /**
-   * Forces the shape the fix exists for: the supplied token cannot validate,
-   * so the refresh token is spent, and the *replacement* is then rejected too
-   * (its `aud` cannot match a resource audience this provider knows nothing
-   * about). The old refresh token is dead either way. The question is only
-   * whether the caller is handed what replaced it.
-   */
   async function spendThenFail() {
     const strict = await createOidcCore({
       issuer: idp.issuer,
@@ -204,14 +177,11 @@ describe("a spent refresh token is never lost", () => {
     expect(err.refreshedTokens).toBeDefined();
     expect(err.refreshedTokens?.access_token).toBeTruthy();
     expect(err.refreshedTokens?.refresh_token).toBeTruthy();
-    // It is genuinely the replacement, not an echo of what was passed in.
     expect(err.refreshedTokens?.refresh_token).not.toBe(originalRefreshToken);
   });
 
   test("and the token it replaced really is gone, which is why that matters", async () => {
     const { originalRefreshToken } = await spendThenFail();
-    // Rotation already happened inside the failed call, so without the set
-    // above the session would be unrecoverable.
     await expect(
       core.refresh({ refreshToken: originalRefreshToken }),
     ).rejects.toThrow();
@@ -230,9 +200,6 @@ describe("a spent refresh token is never lost", () => {
 describe("a refresh cannot change who is signed in", () => {
   test("refuses a refresh token belonging to another subject", async () => {
     const attacker = await login("user-swap-attacker", OFFLINE);
-    // The victim's token cannot be verified, so the chain reaches for the
-    // refresh token beside it, which belongs to somebody else entirely. The
-    // resulting token set is perfectly valid, it is just not this session's.
     const victimToken = await idp.sign(
       { sub: "user-swap-victim" },
       { badKid: true },
@@ -248,8 +215,6 @@ describe("a refresh cannot change who is signed in", () => {
     expect(err).toBeInstanceOf(OidcSubjectError);
     expect(err.expected).toBe("user-swap-victim");
     expect(err.actual).toBe("user-swap-attacker");
-    // The set belongs to the other subject, so it is explicitly not offered
-    // for the caller to persist.
     expect(err.refreshedTokens).toBeUndefined();
   });
 
@@ -294,9 +259,6 @@ describe("returnTo through the real flow", () => {
   });
 
   test("refuses one that arrives back inside a hand-made state", async () => {
-    // A state this library never minted: an older release, another process,
-    // or a caller that built one itself. The value is about to be redirected
-    // to, so the callback re-checks rather than trusting the round trip.
     const hostileState = JSON.stringify({
       visitedUrl: "https://evil.example.com/phish",
       random: "r",
@@ -361,8 +323,6 @@ describe("logout", () => {
     expect(url.searchParams.get("post_logout_redirect_uri")).toBe(
       idp.postLogoutRedirectUri,
     );
-    // Still added by openid-client, which is what keeps the redirect honoured
-    // when no hint is available.
     expect(url.searchParams.get("client_id")).toBe(idp.clientId);
   });
 
@@ -406,9 +366,6 @@ describe("user claims", () => {
 describe("the id_token slot is not a way in either", () => {
   test("refuses a real refresh token presented as an id token", async () => {
     const { tokens } = await login("user-rt-in-id-slot", OFFLINE);
-    // The mirror of the access-token case above, and it used to be the way
-    // round the whole check: the id slot ran the audience policy but no
-    // token-type check at all, so a 14-day credential authenticated a request.
     const err = (await core
       .processTokens({ id_token: tokens.refresh_token as string })
       .catch((e: unknown) => e)) as OidcTokenTypeError;
@@ -426,8 +383,6 @@ describe("the id_token slot is not a way in either", () => {
 
     expect(err).toBeInstanceOf(OidcTokenTypeError);
     expect(err.tokenKind).toBe("id");
-    // `token_type: "Bearer"` names the kind outright, so the claim rules catch
-    // this one before the affirmative-naming requirement has to.
     expect(err.claim).toBe("token_type");
   });
 
@@ -443,10 +398,6 @@ describe("the id_token slot is not a way in either", () => {
 describe("introspection stays within the configured mode", () => {
   test("does not introspect a failed JWT id token beside an opaque access token", async () => {
     const { tokens } = await login("user-mode-mix");
-    // A JWT the issuer's own JWKS rejected. Under "opaque-only" it must not be
-    // introspected, but the id slot used to skip the mode check entirely, so
-    // an introspectable access token beside it was enough to send this to the
-    // AS anyway. That's the amplification the mode exists to prevent.
     const forgedId = await idp.sign(
       { sub: "user-mode-mix", azp: idp.clientId },
       { badKid: true },
@@ -460,7 +411,6 @@ describe("introspection stays within the configured mode", () => {
       })
       .catch(() => undefined);
 
-    // Exactly one: the opaque access token, and nothing for the id token.
     expect(idp.calls.introspection).toBe(before + 1);
   });
 });
@@ -468,11 +418,6 @@ describe("introspection stays within the configured mode", () => {
 describe("the subject binding holds for opaque tokens too", () => {
   test("a declared subject catches a foreign refresh token", async () => {
     const attacker = await login("user-opaque-attacker", OFFLINE);
-    // Neither supplied token can be read: an opaque string that no longer
-    // introspects names no subject, which is the ordinary expiry case for a
-    // provider issuing opaque access tokens. Inference has nothing to work
-    // with, so the caller's own record of who this session belongs to is what
-    // makes the check possible.
     const err = (await core
       .processTokens({
         access_token: "opaque-and-no-longer-active-0123456789",
@@ -484,8 +429,6 @@ describe("the subject binding holds for opaque tokens too", () => {
     expect(err).toBeInstanceOf(OidcSubjectError);
     expect(err.expected).toBe("user-opaque-victim");
     expect(err.actual).toBe("user-opaque-attacker");
-    // Never handed back: a set minted for somebody else is not the caller's
-    // to store.
     expect(err.refreshedTokens).toBeUndefined();
   });
 
@@ -527,8 +470,6 @@ describe("the subject binding holds for opaque tokens too", () => {
     });
     const { tokens } = await login("user-unbindable", OFFLINE);
 
-    // Same shape as above but with no `subject` to compare against: the call
-    // succeeds, and says out loud that the guarantee could not be enforced.
     const result = await quiet.processTokens({
       access_token: "opaque-and-no-longer-active-9876543210",
       refresh_token: tokens.refresh_token as string,
@@ -547,9 +488,6 @@ describe("token-endpoint failures stay inside the error hierarchy", () => {
       { sub: "user-dead-refresh", azp: idp.clientId },
       { expired: true },
     );
-    // The most common failure a live session meets. Escaping as
-    // `openid-client`'s own error meant a caller catching OidcError to answer
-    // 401 answered 500 to a user who only needed to log in again.
     const err = (await core
       .processTokens({
         id_token: expired,
@@ -560,7 +498,6 @@ describe("token-endpoint failures stay inside the error hierarchy", () => {
     expect(err).toBeInstanceOf(OidcError);
     expect(err).toBeInstanceOf(OidcGrantError);
     expect(err.grant).toBe("refresh_token");
-    // The provider's own diagnosis is not thrown away.
     expect(err.cause).toBeDefined();
   });
 
@@ -610,15 +547,6 @@ describe("redirect URIs handed to the provider", () => {
 });
 
 describe("a verification flag never vouches for the other token's value", () => {
-  /**
-   * The realistic shape: a long-lived session whose access token still carries
-   * the address the issuer verified, beside a newer id token naming the address
-   * the user has just changed to and has *not* verified. Both tokens are
-   * genuine, both name the same subject, and both pass every audience and
-   * type check. They simply describe different moments. A per-claim merge
-   * hands the new address back marked as verified, which is the account
-   * takeover the flag exists to prevent.
-   */
   test("drops a flag whose value came from the other token", async () => {
     const access = await idp.sign({
       sub: "vouch-user",
@@ -740,9 +668,6 @@ describe("a direct refresh can be bound to a subject too", () => {
 
 describe("a back-channel logout token is neither kind of token", () => {
   test("refuses one in the access slot, where it satisfies every other check", async () => {
-    // Shaped as OIDC Back-Channel Logout 1.0 §2.4 requires: no nonce, so
-    // nothing in `idTokenOnlyClaims` catches it, and an `azp` that binds it to
-    // this client exactly as a real access token's would.
     const logoutToken = await idp.sign({
       sub: "logout-user",
       azp: idp.clientId,
@@ -777,9 +702,6 @@ describe("PKCE is not silently skipped", () => {
       "pkce-user",
     );
 
-    // What a lost or expired verifier cookie actually looks like at the
-    // callback. `openid-client` reads a falsy verifier as "no PKCE was used"
-    // and omits `code_verifier` from the exchange entirely.
     await expect(
       core.resolveSignin({
         callbackUrl,
@@ -868,11 +790,6 @@ describe("construction and argument guards", () => {
 
 describe("an identity is an issuer plus a subject", () => {
   test("the user carries the issuer it was verified against", async () => {
-    // `sub` is unique only within an issuer (OIDC Core 2), and several
-    // providers mint guessable ones: a numeric id, a username, an email. An
-    // application talking to two IdPs and keying accounts on `sub` alone lets a
-    // subject at one collide with a different person at the other, so the claim
-    // that scopes it has to be reachable from the shape callers actually read.
     const { tokens } = await login("issuer-scoped-user");
     const result = await core.processTokens({
       access_token: tokens.access_token as string,
@@ -882,10 +799,6 @@ describe("an identity is an issuer plus a subject", () => {
   });
 
   test("the issuer is the verified one, not whatever a claim said", async () => {
-    // The only claim set a caller can steer here is an introspection response,
-    // which need not carry `iss` at all. If it did, it would be the AS
-    // describing itself rather than something this library checked. The value
-    // reported is the issuer every strategy was pinned to.
     const opaque = await createOidcCore({
       issuer: idp.issuer,
       clientId: idp.clientId,
@@ -902,11 +815,6 @@ describe("an identity is an issuer plus a subject", () => {
 
 describe("sender-constrained tokens are not silently downgraded", () => {
   test("warns when an access token carries a cnf claim", async () => {
-    // A `cnf` claim is the issuer binding the token to a key (RFC 9449 DPoP,
-    // RFC 8705 mTLS). Checking that needs the proof travelling with the HTTP
-    // request, which this library never sees, so the token validates and is
-    // then usable by anyone who stole it, the one thing the constraint
-    // exists to prevent. It cannot be checked here, so it is said out loud.
     const warnings: string[] = [];
     const bound = await createOidcCore({
       issuer: idp.issuer,
@@ -929,8 +837,6 @@ describe("sender-constrained tokens are not silently downgraded", () => {
     expect(result.user.sub).toBe("dpop-user");
     expect(warnings.some((line) => line.includes('"cnf"'))).toBe(true);
 
-    // Once per instance: it describes the provider's configuration, not the
-    // request that happened to reveal it.
     const before = warnings.length;
     await bound.processTokens({ access_token: token });
     expect(warnings.length).toBe(before);
@@ -958,12 +864,6 @@ describe("sender-constrained tokens are not silently downgraded", () => {
 });
 
 describe("what a caller has to catch to answer 401", () => {
-  /**
-   * A missing or empty token is the ordinary "this browser has no session"
-   * case, so it belongs on the same path as a token that failed to
-   * validate. If it escaped as a bare `TypeError`, an auth middleware
-   * catching `OidcError` would turn a logged-out visitor into a 500.
-   */
   test("a request-path input fault is inside the error hierarchy", async () => {
     const err = (await core
       .processTokens({ access_token: null })
@@ -996,11 +896,6 @@ describe("what a caller has to catch to answer 401", () => {
     }
   });
 
-  /**
-   * The other half of the split: a misconfiguration is a bug that should
-   * stop the process at startup, not something a request handler catches
-   * and answers 401 to.
-   */
   test("but a startup misconfiguration stays a plain TypeError", async () => {
     const err = (await createOidcCore({
       issuer: idp.issuer,

@@ -41,14 +41,6 @@ export type {
 
 import type { OidcCoreOptions } from "./options";
 
-/**
- * Discovers an OIDC issuer and returns the operations you need to
- * implement login: `startSignin`/`resolveSignin` for the authorization
- * code flow, `processTokens` for validation, `refresh`, `getLogoutUrl`,
- * and `fetchUserInfoFromIssuer`. Framework-agnostic: call it once at
- * startup with your issuer and client id, then use the returned object
- * wherever you need it.
- */
 export async function createOidcCore(opts: OidcCoreOptions) {
   const log = buildLogger(opts.logger, opts.logLevel);
   const development = resolveDevelopment(opts.development);
@@ -134,7 +126,6 @@ export async function createOidcCore(opts: OidcCoreOptions) {
   const fetchUserInfoFromIssuer = createUserInfoFetcher(ctx);
 
   return {
-    /** The discovered `openid-client` configuration, for advanced use. */
     configuration: config,
     startSignin,
     resolveSignin,

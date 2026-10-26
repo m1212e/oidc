@@ -1,15 +1,6 @@
-/**
- * Checks that a JWT (or introspection response) is the kind of token it
- * was presented as, so an id token can't be used where an access token is
- * expected, and vice versa. Configure via
- * {@link OidcCoreOptions.idTokenOnlyClaims} and
- * {@link OidcCoreOptions.accessTokenTyp} on `createOidcCore`.
- */
-
 import type { AudienceClaims } from "./audience";
 import { OidcTokenError, type TokenKind } from "./errors";
 
-/** Claims that only ever appear on an id token. */
 export const DEFAULT_ID_TOKEN_ONLY_CLAIMS: readonly string[] = [
   "nonce",
   "at_hash",
@@ -17,15 +8,8 @@ export const DEFAULT_ID_TOKEN_ONLY_CLAIMS: readonly string[] = [
   "s_hash",
 ];
 
-/** The RFC 9068 `typ` for JWT access tokens, normalized. */
 const ACCESS_TOKEN_TYP = "application/at+jwt";
 
-/**
- * Maps the values providers use to name a token's kind (via `typ`,
- * `token_type`, or `token_use`) to the kind itself. A `Map` rather than an
- * object, since the key comes from the token and shouldn't touch
- * `Object.prototype`.
- */
 const NAMED_TOKEN_KINDS = new Map<string, TokenKind | "other">([
   ["access", "access"],
   ["access_token", "access"],
@@ -47,7 +31,6 @@ const NAMED_TOKEN_KINDS = new Map<string, TokenKind | "other">([
   ["serialized-id", "other"],
 ]);
 
-/** The kind a value names, or `undefined` if it names none this library knows. */
 function namedKind(value: unknown): TokenKind | "other" | undefined {
   if (typeof value !== "string" || value.length === 0) return undefined;
   const bare = value
@@ -57,14 +40,12 @@ function namedKind(value: unknown): TokenKind | "other" | undefined {
   return NAMED_TOKEN_KINDS.get(bare);
 }
 
-/** Normalizes `typ` so `"at+jwt"` and `"application/at+jwt"` compare equal. */
 function normalizeTyp(typ: unknown): string | undefined {
   if (typeof typ !== "string" || typ.length === 0) return undefined;
   const lower = typ.toLowerCase();
   return lower.includes("/") ? lower : `application/${lower}`;
 }
 
-/** Thrown when a token isn't the kind it was presented as. */
 export class OidcTokenTypeError extends OidcTokenError {
   constructor(tokenKind: TokenKind, claim: string, message: string) {
     super(tokenKind, claim, message);
@@ -74,9 +55,7 @@ export class OidcTokenTypeError extends OidcTokenError {
 
 export type TokenTypePolicy = {
   idTokenOnlyClaims: readonly string[];
-  /** Normalized required `typ` for access tokens, or `undefined` when not configured. */
   accessTokenTyp?: string;
-  /** See {@link OidcCoreOptions.requireIntrospectedTokenType}. */
   requireIntrospectedTokenType: boolean;
 };
 
@@ -92,10 +71,6 @@ export function buildTokenTypePolicy(opts: {
   };
 }
 
-/**
- * Checks everything decidable from claims alone, without a JWS header. Also
- * used for introspection responses, which have no header at all.
- */
 export function assertTokenTypeFromClaims(
   claims: AudienceClaims,
   tokenKind: TokenKind,
@@ -112,7 +87,6 @@ export function assertTokenTypeFromClaims(
     }
   }
 
-  // Only checked when the value names a kind this library recognizes.
   for (const claim of ["token_use", "typ", "token_type"] as const) {
     const kind = namedKind(claims[claim]);
     if (kind === undefined || kind === tokenKind) continue;
@@ -127,7 +101,6 @@ export function assertTokenTypeFromClaims(
     );
   }
 
-  // A logout token is shaped like an id token, so check both slots.
   if (claims.events !== undefined) {
     throw new OidcTokenTypeError(
       tokenKind,
@@ -139,10 +112,6 @@ export function assertTokenTypeFromClaims(
   }
 }
 
-/**
- * The complete policy for a JWT jose has verified: the claim rules above,
- * plus the `typ` header rule.
- */
 export function assertTokenTypeAfterJwtVerify(
   claims: AudienceClaims,
   header: { typ?: string },
@@ -179,11 +148,6 @@ export function assertTokenTypeAfterJwtVerify(
   }
 }
 
-/**
- * The policy for an introspection response presented as an access token.
- * `active: true` alone doesn't mean it's an access token, since one
- * endpoint answers for every token type.
- */
 export function assertIntrospectedAccessToken(
   claims: AudienceClaims,
   policy: TokenTypePolicy,
@@ -200,10 +164,6 @@ export function assertIntrospectedAccessToken(
   );
 }
 
-/**
- * The mirror of {@link assertIntrospectedAccessToken} for an introspection
- * response presented as an id token.
- */
 export function assertIntrospectedIdToken(
   claims: AudienceClaims,
   policy: TokenTypePolicy,
@@ -220,7 +180,6 @@ export function assertIntrospectedIdToken(
   );
 }
 
-/** The kind an introspection response names, by whichever claim carries it. */
 function introspectedKind(
   claims: AudienceClaims,
 ): TokenKind | "other" | undefined {

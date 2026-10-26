@@ -9,37 +9,19 @@ export type TestOidcProvider = {
   redirectUri: string;
   postLogoutRedirectUri: string;
   close: () => Promise<void>;
-  /** Number of times each real provider endpoint has been hit so far. */
   calls: { introspection: number; userinfo: number; token: number };
-  /**
-   * Drives a real authorization-code + PKCE flow against the provider,
-   * following redirects and auto-completing the login/consent interactions
-   * like a browser would (without a browser or form-filling). Returns the
-   * final redirect back to `redirectUri`, carrying the real `code`/`state`
-   * the provider issued.
-   */
   runAuthorizationFlow: (
     authorizationUrl: URL,
     accountId?: string,
   ) => Promise<URL>;
-  /**
-   * Mints a JWT with the same key the provider signs its own ID tokens with
-   * (or, with `badKid`, a key the provider's JWKS doesn't have), for
-   * exercising expiry/signature-failure paths a real login can't produce
-   * on demand.
-   */
   sign: (
     claims: { sub: string; email?: string } & Record<string, unknown>,
     opts?: {
       expired?: boolean;
       badKid?: boolean;
-      /** Overrides the default `aud` of the registered client id. */
       audience?: string | string[];
-      /** Seconds from now until `exp`. Negative for an already-expired token. */
       expiresIn?: number;
-      /** Omits `exp` entirely, for a token that never expires. */
       noExpiry?: boolean;
-      /** Sets the JWS `typ` header, e.g. `"at+jwt"` for an RFC 9068 access token. */
       typ?: string;
     },
   ) => Promise<string>;
@@ -48,18 +30,12 @@ export type TestOidcProvider = {
 const DEFAULT_ACCOUNT = "test-user";
 
 export async function startTestOidcProvider(opts?: {
-  /**
-   * Whether to advertise an `end_session_endpoint`. Turn it off to stand in
-   * for a provider that has no RP-initiated logout at all. Defaults to on.
-   */
   rpInitiatedLogout?: boolean;
 }): Promise<TestOidcProvider> {
   const clientId = "test-client";
   const redirectUri = "https://app.example.com/callback";
   const postLogoutRedirectUri = "https://app.example.com/logged-out";
 
-  // The issuer has to be known up front to construct `Provider`, so bind an
-  // ephemeral port first and derive the issuer URL from it.
   const server = http.createServer();
   await new Promise<void>((resolve) => {
     server.listen(0, "127.0.0.1", resolve);
@@ -67,10 +43,6 @@ export async function startTestOidcProvider(opts?: {
   const { port } = server.address() as AddressInfo;
   const issuer = `http://127.0.0.1:${port}`;
 
-  // Supplying our own signing key (rather than letting the provider generate
-  // one) means the test harness can mint tokens with that same key later,
-  // e.g. a validly-signed-but-expired ID token, which a real login can't
-  // produce on demand.
   const kid = "test-key";
   const badKid = "not-in-jwks";
   const { privateKey } = await generateKeyPair("RS256", { extractable: true });
@@ -82,10 +54,6 @@ export async function startTestOidcProvider(opts?: {
   const provider = new Provider(issuer, {
     cookies: { keys: ["test-only-cookie-key"] },
     jwks: { keys: [{ ...privateJwk, kid, alg: "RS256", use: "sig" }] },
-    // Without this, oidc-provider only puts requested claims on the ID token
-    // for flows where the client can't also call /userinfo. It otherwise
-    // expects a userinfo round-trip. Tests want the claims on the ID token
-    // itself, so a JWKS-only test doesn't need a UserInfo call to succeed.
     conformIdTokenClaims: false,
     clients: [
       {

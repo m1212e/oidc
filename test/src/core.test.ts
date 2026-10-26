@@ -27,7 +27,6 @@ afterAll(async () => {
   await idp.close();
 });
 
-/** Runs a full authorization-code + PKCE login against the real provider and returns the exchanged tokens. */
 async function login(accountId: string, scope?: string) {
   const { codeVerifier, authorizationUrl, state } = await core.startSignin({
     redirectUri: idp.redirectUri,
@@ -76,9 +75,7 @@ describe("startSignin", () => {
 
     const nonce = result.authorizationUrl.searchParams.get("nonce");
     expect(nonce).toBeTruthy();
-    // Stored in the state, so the caller has nothing extra to persist.
     expect(JSON.parse(result.state).nonce).toBe(nonce);
-    // A value of its own, not a second use of the state's randomness.
     expect(JSON.parse(result.state).random).not.toBe(nonce);
   });
 
@@ -125,18 +122,12 @@ describe("nonce", () => {
       redirectUri: idp.redirectUri,
       returnTo: "/",
     });
-    // The authorization request goes out with someone else's nonce while our
-    // stored state still holds ours, so the ID token comes back bound to a
-    // request that was not this one.
     authorizationUrl.searchParams.set("nonce", "not-the-nonce-we-stored");
     const callbackUrl = await idp.runAuthorizationFlow(
       authorizationUrl,
       "user-nonce-mismatch",
     );
 
-    // The exchange failure surfaces as an OidcGrantError so that one
-    // `instanceof OidcError` covers it. `openid-client` reports the failed
-    // comparison by code, which rides along as the cause.
     const err = (await core
       .resolveSignin({ callbackUrl, codeVerifier, expectedState: state })
       .catch((e: unknown) => e)) as OidcGrantError;
@@ -158,8 +149,6 @@ describe("nonce", () => {
       "user-nonce-absent",
     );
 
-    // Sending a nonce makes the claim required, so an ID token without one is
-    // rejected as an invalid response rather than quietly accepted.
     const err = (await core
       .resolveSignin({ callbackUrl, codeVerifier, expectedState: state })
       .catch((e: unknown) => e)) as OidcGrantError;
@@ -170,8 +159,6 @@ describe("nonce", () => {
   });
 
   test("a login started before the nonce existed still completes", async () => {
-    // State from the previous release: no `nonce` field, and no nonce sent.
-    // The expectation has to follow the state, not the current code.
     const legacyState = JSON.stringify({
       visitedUrl: "/legacy",
       random: "legacy-random",
@@ -210,8 +197,6 @@ describe("processTokens", () => {
     expect(result.refreshed).toBe(false);
     expect(result.user.sub).toBe("user-1");
     expect(result.user.email).toBe("user-1@example.com");
-    // oidc-provider's default access tokens are opaque, not JWTs. This can
-    // only have succeeded by falling back to real introspection.
     expect(idp.calls.introspection).toBeGreaterThan(introspectionCallsBefore);
   });
 
@@ -235,9 +220,6 @@ describe("processTokens", () => {
     expect(result.refreshed).toBe(true);
     expect(result.refreshedTokens?.access_token).toBeTruthy();
     expect(result.user.sub).toBe("user-2");
-    // The shortcut skips introspection only for the stale expired token, not
-    // for the fresh token set. oidc-provider's access tokens are opaque, so
-    // exactly one legitimate introspection call is expected here.
     expect(idp.calls.introspection).toBe(introspectionCallsBefore + 1);
     expect(idp.calls.userinfo).toBe(userinfoCallsBefore);
   });
@@ -248,8 +230,6 @@ describe("processTokens", () => {
       "openid profile email offline_access",
     );
 
-    // Signed with a key the provider's JWKS doesn't have (not an expiry
-    // failure), so this must exhaust the full fallback chain before refreshing.
     const badToken = await idp.sign({ sub: "user-3" }, { badKid: true });
 
     const result = await core.processTokens({
@@ -286,9 +266,6 @@ describe("processTokens token-type binding", () => {
       "openid profile email offline_access",
     );
 
-    // A textbook ID token: signed by the issuer, `aud` and `azp` both this
-    // client, unexpired. Everything the access-token audience policy asks
-    // for. The substitution is only visible in the ID-token-only claims.
     const idTokenAsAccessToken = await idp.sign({
       sub: "user-typeconfusion",
       azp: idp.clientId,
@@ -311,8 +288,6 @@ describe("processTokens token-type binding", () => {
     expect(err.tokenKind).toBe("access");
     expect(err.claim).toBe("nonce");
 
-    // A permanent rejection short-circuits the chain: no introspection round
-    // trip, and no refresh token spent on a token that can never be ours.
     expect(idp.calls.token).toBe(tokenCallsBefore);
     expect(idp.calls.introspection).toBe(introspectionCallsBefore);
   });
@@ -344,9 +319,6 @@ describe("processTokens token-type binding", () => {
 describe("processTokens rejects partially-validated token sets", () => {
   test("throws when one supplied token validated and the other never could", async () => {
     const { tokens } = await login("user-partial");
-    // Signed with a key the provider's JWKS doesn't have. The id token beside
-    // it is genuine, so validating only that one would hand back a `user`
-    // while silently dropping an access token nobody could verify.
     const forgedAccessToken = await idp.sign(
       { sub: "user-partial", azp: idp.clientId },
       { badKid: true },
@@ -367,10 +339,6 @@ describe("processTokens rejects partially-validated token sets", () => {
     ]);
     expect(err.message).toContain("access token JWT verification failed");
     expect(err.cause).toBeDefined();
-    // A JWT the issuer's own JWKS rejected is not introspected under the
-    // default `"opaque-only"` mode: the AS has nothing to add about a
-    // structured token, and asking anyway would let any bearer string an
-    // attacker sends cost an outbound request.
     expect(idp.calls.introspection).toBe(introspectionCallsBefore);
   });
 
@@ -441,7 +409,6 @@ describe("processTokens rejects partially-validated token sets", () => {
 
   test("rejects a call carrying no tokens at all", async () => {
     await expect(
-      // The types forbid this. A JS caller can still do it.
       core.processTokens({} as { id_token: string }),
     ).rejects.toThrow(OidcInputError);
   });
@@ -506,7 +473,6 @@ describe("clockTolerance", () => {
       development: true,
     });
 
-    // exp is 60s in the past: outside the 30s default, inside 5 minutes.
     const staleIdToken = await idp.sign(
       { sub: "user-skew", email: "user-skew@example.com" },
       { expired: true },
@@ -521,8 +487,6 @@ describe("clockTolerance", () => {
   });
 
   test("refuses a tolerance openid-client could not accept", async () => {
-    // A startup misconfiguration, so a plain TypeError rather than an
-    // OidcInputError: it should stop the process, not answer a request.
     await expect(
       createOidcCore({
         issuer: idp.issuer,

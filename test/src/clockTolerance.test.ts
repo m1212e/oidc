@@ -28,7 +28,6 @@ describe("resolveClockTolerance", () => {
     expect(() => resolveClockTolerance(Number.POSITIVE_INFINITY)).toThrow(
       TypeError,
     );
-    // Signed and relative forms are jose-valid but meaningless as a tolerance.
     expect(() => resolveClockTolerance("-30 seconds")).toThrow(TypeError);
     expect(() => resolveClockTolerance("30 seconds ago")).toThrow(TypeError);
     expect(() => resolveClockTolerance("soon")).toThrow(TypeError);

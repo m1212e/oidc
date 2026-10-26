@@ -88,7 +88,6 @@ describe("parseOIDCUser", () => {
       parseOIDCUser({ sub: "u", email: "u@example.com", email_verified: true })
         .email_verified,
     ).toBe(true);
-    // Absent is not false, the issuer simply said nothing.
     expect(
       parseOIDCUser({ sub: "u", email: "u@example.com" }).email_verified,
     ).toBeUndefined();
@@ -101,7 +100,6 @@ describe("parseOIDCUser", () => {
     expect(
       parseOIDCUser({ sub: "u", email_verified: "TRUE" }).email_verified,
     ).toBe(true);
-    // Anything that does not spell out truth must not read as verified.
     expect(
       parseOIDCUser({ sub: "u", email_verified: "false" }).email_verified,
     ).toBe(false);
@@ -121,9 +119,6 @@ describe("parseOIDCUser", () => {
   });
 
   test("reports a claim set it cannot read as an OidcError", () => {
-    // `sub` is optional in an RFC 7662 response, so this is reachable with
-    // claims that already passed every signature and policy check. It has to
-    // land in the same catch block as any other rejection.
     expect(() => parseOIDCUser({ email: "x@example.com" })).toThrow(
       OidcClaimsError,
     );
@@ -153,7 +148,6 @@ describe("parseOIDCFlowState", () => {
   });
 
   test("reports an unparseable state as an OidcError, not a SyntaxError", () => {
-    // A truncated cookie is an ordinary thing to meet at a callback endpoint.
     const err = (() => {
       try {
         parseOIDCFlowState('{"visitedUrl":"/dash');
@@ -167,12 +161,6 @@ describe("parseOIDCFlowState", () => {
 });
 
 describe("claims are validated, never coerced", () => {
-  /**
-   * TypeBox's `Decode` pipeline converts on the way in, which is worse than a
-   * rejection for an identity claim. `sub: null` used to arrive as the string
-   * `"null"`, a subject every subject-less token set would share, instead of
-   * failing the non-empty-string check that guards a refresh binding.
-   */
   test.each([
     ["absent", {}],
     ["null", { sub: null }],
@@ -205,8 +193,6 @@ describe("claims are validated, never coerced", () => {
       ["false", false],
       ["anything else", false],
       [1, true],
-      // Used to convert to `null`, i.e. "the issuer said nothing", which is
-      // the one reading a `0` must never get.
       [0, false],
       [{}, undefined],
     ];
@@ -219,8 +205,6 @@ describe("claims are validated, never coerced", () => {
 
 describe("parseOIDCFlowState is not coerced either", () => {
   test("refuses a nonce that is not a string", () => {
-    // Converted to `"12345"` before, producing a nonce that cannot match the
-    // one the ID token echoes.
     expect(() =>
       parseOIDCFlowState(
         JSON.stringify({ visitedUrl: "/", random: "r", nonce: 12345 }),
@@ -321,8 +305,6 @@ describe("attachRefreshedTokens", () => {
   const tokenSet = { access_token: "new" } as never;
 
   test("carries the replacement on any rejection that follows a refresh", () => {
-    // The refresh token is already spent regardless of what fails afterward,
-    // even a provider shape surprise unrelated to the tokens themselves.
     for (const error of [
       new OidcClaimsError("unreadable claims"),
       new OidcTokenValidationError(["access"], []),

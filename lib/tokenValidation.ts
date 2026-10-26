@@ -1,8 +1,3 @@
-/**
- * The two validation strategies `processTokens` falls back through: local
- * JWKS verification, then remote introspection.
- */
-
 import {
   decodeJwt,
   decodeProtectedHeader,
@@ -34,10 +29,8 @@ import {
 } from "./tokenType";
 import type { AccessTokenClaims, IdTokenClaims } from "./types";
 
-/** Three base64url segments: the shape of a compact JWS, nothing more. */
 const JWS_COMPACT = /^[\w-]+\.[\w-]*\.[\w-]+$/;
 
-/** Whether a token is a JWT at all, as opposed to an opaque handle. */
 export function looksLikeJwt(token: string): boolean {
   if (!JWS_COMPACT.test(token)) return false;
   try {
@@ -52,11 +45,6 @@ export function subjectOf(claims: unknown): string | undefined {
   return typeof sub === "string" && sub.length > 0 ? sub : undefined;
 }
 
-/**
- * The `sub` a supplied JWT names, read without verifying anything. Used
- * only as an extra constraint on what a refresh may return, never to
- * accept a token on its own.
- */
 export function unverifiedSubject(token?: string): string | undefined {
   if (!token || !looksLikeJwt(token)) return undefined;
   try {
@@ -66,10 +54,6 @@ export function unverifiedSubject(token?: string): string | undefined {
   }
 }
 
-/**
- * Collects the outcome of running one validation strategy across both
- * token slots.
- */
 class StrategyOutcome {
   accessTokenValue: AccessTokenClaims;
   idTokenValue: IdTokenClaims;
@@ -79,10 +63,6 @@ class StrategyOutcome {
 
   constructor(private log: Logger) {}
 
-  /**
-   * Captures a permanent rejection (wrong client, wrong token kind) rather
-   * than throwing directly, since `Promise.allSettled` would swallow it.
-   */
   onError(kind: TokenKind, stage: string) {
     return (err: unknown) => {
       if (err instanceof OidcTokenError) {
@@ -106,11 +86,6 @@ class StrategyOutcome {
   }
 }
 
-/**
- * Strategy 1: verify both tokens locally against the issuer's JWKS.
- * Reports expiry via `expired` so `processTokens` can skip straight to a
- * refresh instead of also trying introspection.
- */
 export async function verifyTokensLocally(
   jwks: Parameters<typeof jwtVerify>[1],
   tokens: { access?: string; id?: string },
@@ -168,10 +143,6 @@ export async function verifyTokensLocally(
   return outcome;
 }
 
-/**
- * Strategy 2: fall back to remote introspection for whichever token local
- * verification couldn't validate.
- */
 export async function introspectTokens(
   config: Configuration,
   tokens: { access?: string; id?: string },

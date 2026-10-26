@@ -12,7 +12,6 @@ import {
 } from "./testOidcProvider";
 
 let idp: TestOidcProvider;
-/** The normal case: this app is the client, no resource audience configured. */
 let core: OidcCore;
 
 beforeAll(async () => {
@@ -31,7 +30,6 @@ afterAll(async () => {
 
 describe("id token audience", () => {
   test("rejects a token minted for a different client at the same issuer", async () => {
-    // The cross-client replay: same issuer, valid signature, wrong `aud`.
     const foreign = await idp.sign(
       { sub: "victim" },
       { audience: "some-other-client" },
@@ -54,8 +52,6 @@ describe("id token audience", () => {
   });
 
   test("rejects a correct aud when azp names a different client", async () => {
-    // Keycloak-style azp, but the token was obtained by someone else and
-    // merely lists us as an audience.
     const token = await idp.sign({ sub: "user-azp", azp: "another-client" });
 
     const err = await core
@@ -145,8 +141,6 @@ describe("access token audience, provider shapes", () => {
   });
 
   test("never compares an access token's aud against the client id", async () => {
-    // The Keycloak trap in isolation: aud is *not* the client id and there is
-    // no expectedAudience. Must still pass on the strength of azp alone.
     const token = await idp.sign(
       { sub: "no-aud-match", azp: idp.clientId },
       { audience: "totally-unrelated-resource" },
@@ -187,18 +181,12 @@ describe("access token audience, backstop", () => {
       }),
     ).rejects.toBeInstanceOf(OidcAudienceError);
 
-    // An audience mismatch is permanent. Refreshing cannot fix it, so the
-    // fallback chain must short-circuit rather than spend the refresh token.
     expect(idp.calls.token).toBe(tokenCallsBefore);
   });
 });
 
 describe("expectedAudience", () => {
   test("refuses an entry that is not a usable audience value", () => {
-    // Silently dropping the only entry left the policy comparing the
-    // authorized party to `clientId` instead: a different question, against a
-    // value the caller never configured, while the deployment read as though
-    // it had pinned a resource audience.
     for (const expectedAudience of [
       "",
       [""],
@@ -209,7 +197,6 @@ describe("expectedAudience", () => {
         buildAudiencePolicy({ clientId: "my-app", expectedAudience }),
       ).toThrowError(TypeError);
     }
-    // An empty list is "not configured", which is a coherent thing to mean.
     expect(
       buildAudiencePolicy({ clientId: "my-app", expectedAudience: [] })
         .expectedAudience,
@@ -237,9 +224,6 @@ describe("expectedAudience", () => {
   });
 
   test("accepts a resource-bound token that another client obtained", async () => {
-    // The ordinary API/SPA split: the orders API validates a token its own
-    // clientId did not request. Requiring `azp === clientId` on top of the
-    // audience match is what used to reject this.
     const api = await createOidcCore({
       issuer: idp.issuer,
       clientId: "orders-api",
@@ -260,8 +244,6 @@ describe("expectedAudience", () => {
   });
 
   test("a configured audience makes authorizedPartyClaims inert", async () => {
-    // `consumer_key` names a client that is not this one. The audience match
-    // is the binding, so it is never consulted.
     const api = await createOidcCore({
       issuer: idp.issuer,
       clientId: "orders-api",
@@ -321,8 +303,6 @@ describe("expectedAudience", () => {
 
 describe("checks delegated to jose", () => {
   test("an id token aud failure still short-circuits instead of refreshing", async () => {
-    // Now raised by jose's `audience` option rather than our own code. The
-    // permanent-failure mapping has to survive that hand-off.
     const foreign = await idp.sign(
       { sub: "victim-2" },
       { audience: "some-other-client" },
@@ -370,10 +350,8 @@ describe("checks delegated to jose", () => {
       development: true,
       logLevel: "silent",
     });
-    // The provider signs RS256.
     const token = await idp.sign({ sub: "rs256-user" });
     await expect(esOnly.processTokens({ id_token: token })).rejects.toThrow();
-    // ...and the same token is fine under the discovered defaults.
     await expect(
       core.processTokens({ id_token: token }),
     ).resolves.toBeDefined();
@@ -410,7 +388,6 @@ describe("escape hatches", () => {
       logLevel: "silent",
     });
 
-    // Would fail the built-in id-token policy outright (wrong aud).
     const allowed = await idp.sign(
       { sub: "allowed" },
       { audience: "some-other-client" },
@@ -427,7 +404,6 @@ describe("escape hatches", () => {
 });
 
 describe("an introspected ID token is bound the same way a signed one is", () => {
-  /** What an AS reports for an ID token: the audience is the client. */
   const introspected = {
     active: true,
     sub: "u",
@@ -441,8 +417,6 @@ describe("an introspected ID token is bound the same way a signed one is", () =>
       expectedAudience: "api://orders",
     });
 
-    // Held to the access-token policy, the resource audience makes this
-    // unvalidatable: "api://orders" is not something an ID token ever says.
     expect(() => assertTokenAudience(introspected, "access", policy)).toThrow(
       OidcAudienceError,
     );
@@ -491,9 +465,6 @@ describe("an introspected ID token is bound the same way a signed one is", () =>
 
   test("refuses an aud naming another client, whatever client_id says", () => {
     const policy = buildAudiencePolicy({ clientId: "my-app" });
-    // The signed path rejects this via jose's `audience` option. The
-    // introspection path has to reject it on its own, or the two paths
-    // disagree about what an ID token is allowed to say.
     const err = (() => {
       try {
         assertIntrospectedIdTokenAudience(
@@ -511,7 +482,6 @@ describe("an introspected ID token is bound the same way a signed one is", () =>
   });
 
   test("accepts a response that names the client only in client_id", () => {
-    // RFC 7662 leaves `aud` optional, so a binding claim alone is enough.
     const policy = buildAudiencePolicy({ clientId: "my-app" });
     expect(() =>
       assertIntrospectedIdTokenAudience(
@@ -532,8 +502,6 @@ describe("an introspected ID token is bound the same way a signed one is", () =>
     })();
 
     expect(err).toBeInstanceOf(OidcAudienceError);
-    // The report has to name the token that actually failed, not the slot
-    // the introspection helper happens to reuse.
     expect(err?.tokenKind).toBe("id");
     expect(err?.message).toContain("id token");
     expect(err?.message).not.toContain("access token");
@@ -563,8 +531,6 @@ describe("an introspected ID token is bound the same way a signed one is", () =>
     ).toThrow(OidcAudienceError);
     expect(seen).toEqual(["id"]);
 
-    // And its acceptance is equally final: a response the built-in rules
-    // would refuse outright still passes once verifyAudience approves it.
     const accept = buildAudiencePolicy({
       clientId: "my-app",
       verifyAudience: () => true,
@@ -579,9 +545,6 @@ describe("a malformed authorized-party claim is not stepped over", () => {
   const policy = buildAudiencePolicy({ clientId: "test-client" });
 
   test("refuses an azp that is present but not a string", () => {
-    // The claim the issuer meant as the binding is there, it's just not a
-    // usable one. Skipping to the next claim name would let the token be bound
-    // by a claim its issuer did not intend for that, so it fails instead.
     expect(() =>
       assertTokenAudience(
         { azp: ["test-client"], client_id: "test-client", sub: "u" },

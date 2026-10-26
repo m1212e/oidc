@@ -5,15 +5,12 @@ import type { Logger } from "../logger";
 import type { ReturnToPolicy } from "../returnTo";
 import type { TokenTypePolicy } from "../tokenType";
 
-/** Whatever `jwtVerify`'s key-resolution parameter accepts, usually a JWKS. */
 type Jwks = Parameters<typeof jwtVerify>[1];
 
-/** Everything discovery settles once, shared across every operation `createOidcCore` builds. */
 export type CoreContext = {
   config: Configuration;
   log: Logger;
   issuer: string;
-  /** `undefined` when the issuer advertises no `jwks_uri`. */
   jwks: Jwks | undefined;
   audiencePolicy: AudiencePolicy;
   tokenTypePolicy: TokenTypePolicy;

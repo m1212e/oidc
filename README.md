@@ -159,3 +159,7 @@ try {
 ## License
 
 Apache-2.0
+
+## AI disclaimer
+
+AI tools assisted in writing this code. All of it has been reviewed and validated by a human.

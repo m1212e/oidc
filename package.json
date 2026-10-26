@@ -5,7 +5,7 @@
   "type": "module",
   "repository": "https://github.com/m1212e/oidc",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.12.0"
   },
   "license": "Apache-2.0",
   "files": [

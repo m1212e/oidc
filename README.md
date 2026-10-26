@@ -9,7 +9,7 @@ npm install @m1212e/oidc
 # or: bun add @m1212e/oidc
 ```
 
-Requires Node 20+ (or Bun). ESM and CJS builds are both published.
+Requires Node 22.12+ (or Bun). ESM and CJS builds are both published.
 
 ## Setup
 

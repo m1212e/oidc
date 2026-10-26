@@ -109,25 +109,25 @@ await oidc.fetchUserInfoFromIssuer({ accessToken, expectedSubject: user.sub });
 
 ## Options
 
-| Option | Default | Use it when |
-| --- | --- | --- |
-| `issuer` | required | |
-| `clientId` | required | |
-| `clientSecret` | | confidential client |
-| `expectedAudience` | | your API's access tokens carry a specific `aud`, e.g. `"https://api.example.com"` |
-| `authorizedPartyClaims` | `["azp", "client_id", "cid", "appid"]` | your provider puts the client id in a different claim |
-| `verifyAudience` | | you need a custom check: `(claims, kind) => claims.aud === "x"` |
-| `allowedReturnToOrigins` | `[]` | `returnTo` should allow absolute URLs, e.g. `["https://admin.example.com"]` |
-| `scope` (on `startSignin`) | `"openid profile email offline_access"` | set `"openid profile email"` if you don't want a refresh token |
-| `introspection` | `"opaque-only"` | `"auto"`: also introspect JWTs that fail locally. `"never"`: never call the introspection endpoint |
-| `requireIntrospectedTokenType` | `true` | set `false` if your provider's introspection omits `token_type` |
-| `accessTokenTyp` | | require a JWT `typ` header, e.g. `"at+jwt"` |
-| `idTokenOnlyClaims` | `["nonce", "at_hash", "c_hash", "s_hash"]` | |
-| `signingAlgorithms` | from discovery | restrict accepted algorithms, e.g. `["RS256"]` |
-| `clockTolerance` | `30` | seconds, or a string like `"1m"` |
-| `development` | `NODE_ENV === "development"` | `true` allows a local IdP over plain HTTP |
-| `logLevel` | `"warn"` | `"silent" \| "error" \| "warn" \| "info" \| "debug"` |
-| `logger` | `console` | `{ debug, info, warn, error }` |
+| Option                         | Default                                    | Use it when                                                                                        |
+| ------------------------------ | ------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| `issuer`                       | required                                   |                                                                                                    |
+| `clientId`                     | required                                   |                                                                                                    |
+| `clientSecret`                 |                                            | confidential client                                                                                |
+| `expectedAudience`             |                                            | your API's access tokens carry a specific `aud`, e.g. `"https://api.example.com"`                  |
+| `authorizedPartyClaims`        | `["azp", "client_id", "cid", "appid"]`     | your provider puts the client id in a different claim                                              |
+| `verifyAudience`               |                                            | you need a custom check: `(claims, kind) => claims.aud === "x"`                                    |
+| `allowedReturnToOrigins`       | `[]`                                       | `returnTo` should allow absolute URLs, e.g. `["https://admin.example.com"]`                        |
+| `scope` (on `startSignin`)     | `"openid profile email offline_access"`    | set `"openid profile email"` if you don't want a refresh token                                     |
+| `introspection`                | `"opaque-only"`                            | `"auto"`: also introspect JWTs that fail locally. `"never"`: never call the introspection endpoint |
+| `requireIntrospectedTokenType` | `true`                                     | set `false` if your provider's introspection omits `token_type`                                    |
+| `accessTokenTyp`               |                                            | require a JWT `typ` header, e.g. `"at+jwt"`                                                        |
+| `idTokenOnlyClaims`            | `["nonce", "at_hash", "c_hash", "s_hash"]` |                                                                                                    |
+| `signingAlgorithms`            | from discovery                             | restrict accepted algorithms, e.g. `["RS256"]`                                                     |
+| `clockTolerance`               | `30`                                       | seconds, or a string like `"1m"`                                                                   |
+| `development`                  | `NODE_ENV === "development"`               | `true` allows a local IdP over plain HTTP                                                          |
+| `logLevel`                     | `"warn"`                                   | `"silent" \| "error" \| "warn" \| "info" \| "debug"`                                               |
+| `logger`                       | `console`                                  | `{ debug, info, warn, error }`                                                                     |
 
 ## Errors
 
@@ -145,16 +145,16 @@ try {
 }
 ```
 
-| Error | Thrown when |
-| --- | --- |
-| `OidcTokenValidationError` | a token could not be validated |
+| Error                                                        | Thrown when                                                             |
+| ------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| `OidcTokenValidationError`                                   | a token could not be validated                                          |
 | `OidcTokenError` (`OidcAudienceError`, `OidcTokenTypeError`) | a token is valid but not meant for this client or not the expected kind |
-| `OidcSubjectError` | tokens belong to different users |
-| `OidcGrantError` | code exchange or refresh failed |
-| `OidcStateError` | the stored `state` was modified |
-| `OidcReturnToError` | `returnTo` / redirect URI is not allowed |
-| `OidcInputError` | invalid arguments |
-| `OidcUserInfoError`, `OidcLogoutError`, `OidcClaimsError` | the respective call failed |
+| `OidcSubjectError`                                           | tokens belong to different users                                        |
+| `OidcGrantError`                                             | code exchange or refresh failed                                         |
+| `OidcStateError`                                             | the stored `state` was modified                                         |
+| `OidcReturnToError`                                          | `returnTo` / redirect URI is not allowed                                |
+| `OidcInputError`                                             | invalid arguments                                                       |
+| `OidcUserInfoError`, `OidcLogoutError`, `OidcClaimsError`    | the respective call failed                                              |
 
 ## License
 

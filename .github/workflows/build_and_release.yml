@@ -3,7 +3,7 @@ name: Build and release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 jobs:
   test_and_build:
@@ -23,13 +23,13 @@ jobs:
       - name: Run Trivy scanner on fs
         uses: aquasecurity/trivy-action@0.35.0
         with:
-          scan-type: 'fs'
-          scan-ref: '.'
+          scan-type: "fs"
+          scan-ref: "."
           exit-code: 1
-          format: 'table'
+          format: "table"
           ignore-unfixed: true
-          vuln-type: 'library'
-          severity: 'CRITICAL,HIGH'
+          vuln-type: "library"
+          severity: "CRITICAL,HIGH"
       - name: Run build
         run: bun run build
         env:
@@ -55,7 +55,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        registry-url: ["https://npm.pkg.github.com", "https://registry.npmjs.org"]
+        registry-url:
+          ["https://npm.pkg.github.com", "https://registry.npmjs.org"]
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -63,26 +64,26 @@ jobs:
       id-token: write
     needs: [test_and_build]
     steps:
-    - name: Download build output
-      uses: actions/download-artifact@v8
-      with:
-        name: oidc-build-output
-        path: .
-    - name: Set registry token
-      id: token
-      run: |
-        if [[ "${{ matrix.registry-url }}" == "https://npm.pkg.github.com" ]]; then
-          echo "token=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_OUTPUT
-        fi
+      - name: Download build output
+        uses: actions/download-artifact@v8
+        with:
+          name: oidc-build-output
+          path: .
+      - name: Set registry token
+        id: token
+        run: |
+          if [[ "${{ matrix.registry-url }}" == "https://npm.pkg.github.com" ]]; then
+            echo "token=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_OUTPUT
+          fi
 
-        if [[ "${{ matrix.registry-url }}" == "https://registry.npmjs.org" ]]; then
-          echo "token=${{ secrets.NPM_TOKEN }}" >> $GITHUB_OUTPUT
-        fi
-    - uses: actions/setup-node@v6
-      with:
-        node-version: "24"
-        registry-url: ${{ matrix.registry-url }}
-    - name: Publish package
-      run: npm publish --provenance --access public
-      env:
-        NODE_AUTH_TOKEN: ${{ steps.token.outputs.token }}
+          if [[ "${{ matrix.registry-url }}" == "https://registry.npmjs.org" ]]; then
+            echo "token=${{ secrets.NPM_TOKEN }}" >> $GITHUB_OUTPUT
+          fi
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: ${{ matrix.registry-url }}
+      - name: Publish package
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ steps.token.outputs.token }}

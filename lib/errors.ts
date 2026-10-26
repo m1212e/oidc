@@ -76,6 +76,11 @@ export type TokenValidationFailure = {
   /** The strategy that failed: `"JWT verification"` or `"introspection"`. */
   stage: string;
   error: unknown;
+  /**
+   * The provider couldn't be asked: the key set fetch or the introspection
+   * request failed. Says nothing about the token itself.
+   */
+  transient: boolean;
 };
 
 function describe(error: unknown): string {
@@ -120,6 +125,41 @@ export class OidcTokenValidationError extends OidcError {
 }
 
 /**
+ * Thrown instead of a plain {@link OidcTokenValidationError} when a token
+ * couldn't be validated because the provider couldn't be reached (its key
+ * set or introspection endpoint failed), not because anything was wrong
+ * with the token. The refresh token was not spent on it.
+ *
+ * Answer 503 and keep the session: the same tokens may well validate once
+ * the provider is back.
+ */
+export class OidcProviderUnavailableError extends OidcTokenValidationError {
+  constructor(
+    tokenKinds: readonly TokenKind[],
+    failures: readonly TokenValidationFailure[],
+  ) {
+    super(tokenKinds, failures);
+    this.name = "OidcProviderUnavailableError";
+    this.message = `the identity provider could not be reached, so ${this.message}`;
+  }
+}
+
+/**
+ * Whether any of these unvalidated tokens failed only because the provider
+ * couldn't be reached. Refreshing wouldn't help those: the new tokens
+ * would need the same provider to validate.
+ */
+export function providerUnavailable(
+  tokenKinds: readonly TokenKind[],
+  failures: readonly TokenValidationFailure[],
+): boolean {
+  return tokenKinds.some((kind) => {
+    const own = failures.filter((failure) => failure.tokenKind === kind);
+    return own.length > 0 && own.every((failure) => failure.transient);
+  });
+}
+
+/**
  * Thrown when the access and id token name different subjects, or a refresh
  * returned a token set for someone other than the caller's session.
  *
@@ -143,14 +183,15 @@ export class OidcSubjectError extends OidcError {
 /**
  * Thrown when a token-endpoint exchange was refused or failed to complete
  * (expired authorization code, mismatched `state`, expired refresh token,
- * network fault). The provider's own error is available as `cause`.
+ * a token exchange the provider doesn't permit, network fault). The
+ * provider's own error is available as `cause`.
  */
 export class OidcGrantError extends OidcError {
   /** Which exchange failed. */
-  readonly grant: "authorization_code" | "refresh_token";
+  readonly grant: "authorization_code" | "refresh_token" | "token_exchange";
 
   constructor(
-    grant: "authorization_code" | "refresh_token",
+    grant: "authorization_code" | "refresh_token" | "token_exchange",
     message: string,
     options?: ErrorOptions,
   ) {

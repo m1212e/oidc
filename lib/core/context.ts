@@ -1,8 +1,10 @@
 import type { jwtVerify } from "jose";
 import type { Configuration } from "openid-client";
 import type { AudiencePolicy } from "../audience";
+import type { DelegationPolicy } from "../delegation";
 import type { Logger } from "../logger";
 import type { ReturnToPolicy } from "../returnTo";
+import type { TenantPolicy } from "../tenant";
 import type { TokenTypePolicy } from "../tokenType";
 
 /** Whatever `jwtVerify`'s key-resolution parameter accepts, usually a JWKS. */
@@ -16,6 +18,9 @@ export type CoreContext = {
   /** `undefined` when the issuer advertises no `jwks_uri`. */
   jwks: Jwks | undefined;
   audiencePolicy: AudiencePolicy;
+  /** `undefined` unless the issuer is multi-tenant. */
+  tenantPolicy: TenantPolicy;
+  delegationPolicy: DelegationPolicy;
   tokenTypePolicy: TokenTypePolicy;
   returnToPolicy: ReturnToPolicy;
   introspectionMode: "opaque-only" | "auto" | "never";

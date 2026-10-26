@@ -67,6 +67,31 @@ export function unverifiedSubject(token?: string): string | undefined {
 }
 
 /**
+ * Policies that hold for any verified claims, however they were verified
+ * (tenant, delegation). Throws an {@link OidcTokenError} to reject.
+ */
+export type VerifiedClaimsCheck = (
+  claims: unknown,
+  tokenKind: TokenKind,
+) => void;
+
+/**
+ * Whether a local verification failure came from fetching the key set
+ * rather than from the token. jose raises its base `JOSEError` only for a
+ * key set response it couldn't use, and passes fetch failures through as
+ * they are.
+ */
+function keySetUnavailable(err: unknown): boolean {
+  if (err instanceof errors.JWKSTimeout || err instanceof errors.JWKSInvalid) {
+    return true;
+  }
+  if (err instanceof errors.JOSEError) {
+    return err.constructor === errors.JOSEError;
+  }
+  return true;
+}
+
+/**
  * Collects the outcome of running one validation strategy across both
  * token slots.
  */
@@ -82,8 +107,14 @@ class StrategyOutcome {
   /**
    * Captures a permanent rejection (wrong client, wrong token kind) rather
    * than throwing directly, since `Promise.allSettled` would swallow it.
+   * `transient` says whether the failure reached the provider at all, see
+   * {@link TokenValidationFailure.transient}.
    */
-  onError(kind: TokenKind, stage: string) {
+  onError(
+    kind: TokenKind,
+    stage: string,
+    transient: (err: unknown) => boolean = () => false,
+  ) {
     return (err: unknown) => {
       if (err instanceof OidcTokenError) {
         this.fatal ??= err;
@@ -97,7 +128,12 @@ class StrategyOutcome {
         return;
       }
       if (err instanceof errors.JWTExpired) this.expired = true;
-      this.failures.push({ tokenKind: kind, stage, error: err });
+      this.failures.push({
+        tokenKind: kind,
+        stage,
+        error: err,
+        transient: transient(err),
+      });
       this.log.debug(
         `[oidc] ${kind} token ${stage} failed:`,
         (err as Error).message,
@@ -109,22 +145,28 @@ class StrategyOutcome {
 /**
  * Strategy 1: verify both tokens locally against the issuer's JWKS.
  * Reports expiry via `expired` so `processTokens` can skip straight to a
- * refresh instead of also trying introspection.
+ * refresh instead of also trying introspection. Opaque tokens are skipped
+ * rather than failed: there is nothing local to verify them against.
  */
 export async function verifyTokensLocally(
   jwks: Parameters<typeof jwtVerify>[1],
   tokens: { access?: string; id?: string },
-  jwtVerifyOptionsFor: (tokenKind: TokenKind) => JWTVerifyOptions,
+  jwtVerifyOptionsFor: (
+    tokenKind: TokenKind,
+    token: string,
+  ) => JWTVerifyOptions,
   tokenTypePolicy: TokenTypePolicy,
   audiencePolicy: AudiencePolicy,
+  assertVerifiedClaims: VerifiedClaimsCheck,
   log: Logger,
 ): Promise<StrategyOutcome> {
   const outcome = new StrategyOutcome(log);
   const promises: Promise<void>[] = [];
 
-  if (tokens.access) {
+  if (tokens.access && looksLikeJwt(tokens.access)) {
+    const token = tokens.access;
     promises.push(
-      jwtVerify(tokens.access, jwks, jwtVerifyOptionsFor("access"))
+      jwtVerify(token, jwks, jwtVerifyOptionsFor("access", token))
         .then((result) => {
           assertTokenTypeAfterJwtVerify(
             result.payload as AudienceClaims,
@@ -137,14 +179,18 @@ export async function verifyTokensLocally(
             "access",
             audiencePolicy,
           );
+          assertVerifiedClaims(result.payload, "access");
           outcome.accessTokenValue = result.payload;
         })
-        .catch(outcome.onError("access", "JWT verification")),
+        .catch(
+          outcome.onError("access", "JWT verification", keySetUnavailable),
+        ),
     );
   }
-  if (tokens.id) {
+  if (tokens.id && looksLikeJwt(tokens.id)) {
+    const token = tokens.id;
     promises.push(
-      jwtVerify(tokens.id, jwks, jwtVerifyOptionsFor("id"))
+      jwtVerify(token, jwks, jwtVerifyOptionsFor("id", token))
         .then((result) => {
           assertTokenTypeAfterJwtVerify(
             result.payload as AudienceClaims,
@@ -157,9 +203,10 @@ export async function verifyTokensLocally(
             "id",
             audiencePolicy,
           );
+          assertVerifiedClaims(result.payload, "id");
           outcome.idTokenValue = result.payload;
         })
-        .catch(outcome.onError("id", "JWT verification")),
+        .catch(outcome.onError("id", "JWT verification", keySetUnavailable)),
     );
   }
 
@@ -170,7 +217,9 @@ export async function verifyTokensLocally(
 
 /**
  * Strategy 2: fall back to remote introspection for whichever token local
- * verification couldn't validate.
+ * verification couldn't validate. The endpoint answers `active: false` for
+ * a bad token, so a request that fails outright says nothing about the
+ * token and is recorded as transient.
  */
 export async function introspectTokens(
   config: Configuration,
@@ -178,6 +227,7 @@ export async function introspectTokens(
   which: { access: boolean; id: boolean },
   tokenTypePolicy: TokenTypePolicy,
   audiencePolicy: AudiencePolicy,
+  assertVerifiedClaims: VerifiedClaimsCheck,
   log: Logger,
 ): Promise<StrategyOutcome> {
   const outcome = new StrategyOutcome(log);
@@ -186,34 +236,45 @@ export async function introspectTokens(
   if (which.access && tokens.access) {
     promises.push(
       tokenIntrospection(config, tokens.access)
-        .then((result) => {
-          if (!result.active) throw new Error("access token is not active");
-          assertIntrospectedAccessToken(
-            result as AudienceClaims,
-            tokenTypePolicy,
-          );
-          assertTokenAudience(
-            result as AudienceClaims,
-            "access",
-            audiencePolicy,
-          );
-          outcome.accessTokenValue = result;
-        })
+        .then(
+          (result) => {
+            if (!result.active) throw new Error("access token is not active");
+            assertIntrospectedAccessToken(
+              result as AudienceClaims,
+              tokenTypePolicy,
+            );
+            assertTokenAudience(
+              result as AudienceClaims,
+              "access",
+              audiencePolicy,
+            );
+            assertVerifiedClaims(result, "access");
+            outcome.accessTokenValue = result;
+          },
+          outcome.onError("access", "introspection", () => true),
+        )
         .catch(outcome.onError("access", "introspection")),
     );
   }
   if (which.id && tokens.id) {
     promises.push(
       tokenIntrospection(config, tokens.id)
-        .then((result) => {
-          if (!result.active) throw new Error("id token is not active");
-          assertIntrospectedIdToken(result as AudienceClaims, tokenTypePolicy);
-          assertIntrospectedIdTokenAudience(
-            result as AudienceClaims,
-            audiencePolicy,
-          );
-          outcome.idTokenValue = result;
-        })
+        .then(
+          (result) => {
+            if (!result.active) throw new Error("id token is not active");
+            assertIntrospectedIdToken(
+              result as AudienceClaims,
+              tokenTypePolicy,
+            );
+            assertIntrospectedIdTokenAudience(
+              result as AudienceClaims,
+              audiencePolicy,
+            );
+            assertVerifiedClaims(result, "id");
+            outcome.idTokenValue = result;
+          },
+          outcome.onError("id", "introspection", () => true),
+        )
         .catch(outcome.onError("id", "introspection")),
     );
   }

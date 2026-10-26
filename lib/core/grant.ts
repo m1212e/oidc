@@ -9,15 +9,17 @@ import {
   audienceVerifyOption,
 } from "../audience";
 import type { TokenKind } from "../errors";
+import { assertTenantAllowed, expectedIssuerFor } from "../tenant";
 import type { CoreContext } from "./context";
 
 /** jose verification options: signature, issuer, audience, expiry, and required claims. */
 export function jwtVerifyOptions(
   ctx: CoreContext,
   tokenKind: TokenKind,
+  token: string,
 ): JWTVerifyOptions {
   return {
-    issuer: ctx.issuer,
+    issuer: expectedIssuerFor(ctx.issuer, ctx.tenantPolicy, token),
     audience: audienceVerifyOption(ctx.audiencePolicy, tokenKind),
     clockTolerance: ctx.clockTolerance,
     algorithms: ctx.signingAlgorithms,
@@ -28,7 +30,7 @@ export function jwtVerifyOptions(
   };
 }
 
-/** Runs the audience policy against a granted id token's claims. */
+/** Runs the audience and tenant policies against a granted id token's claims. */
 export function assertGrantedIdToken(
   ctx: CoreContext,
   tokens: TokenEndpointResponse & TokenEndpointResponseHelpers,
@@ -36,5 +38,6 @@ export function assertGrantedIdToken(
   const claims = tokens.claims();
   if (claims) {
     assertTokenAudience(claims as AudienceClaims, "id", ctx.audiencePolicy);
+    assertTenantAllowed(claims, "id", ctx.tenantPolicy);
   }
 }

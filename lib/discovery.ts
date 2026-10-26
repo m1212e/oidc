@@ -36,7 +36,7 @@ export const DEFAULT_SIGNING_ALGORITHMS: readonly string[] = [
 ];
 
 /** Whether an `alg` is one a public JWKS key can verify. */
-export function isAsymmetricAlgorithm(alg: string): boolean {
+function isAsymmetricAlgorithm(alg: string): boolean {
   return /^(RS|PS|ES|Ed)/.test(alg);
 }
 

@@ -5,6 +5,7 @@ import {
   discovery,
 } from "openid-client";
 import { buildAudiencePolicy } from "../audience";
+import { buildDelegationPolicy } from "../delegation";
 import {
   assertDiscoveredIssuer,
   assertPkceSupported,
@@ -15,8 +16,10 @@ import {
 } from "../discovery";
 import { buildLogger } from "../logger";
 import { buildReturnToPolicy } from "../returnTo";
+import { buildTenantPolicy } from "../tenant";
 import { buildTokenTypePolicy } from "../tokenType";
 import type { CoreContext } from "./context";
+import { createExchangeToken } from "./exchange";
 import { createLogout } from "./logout";
 import { createProcessTokens } from "./processTokens";
 import { createRefresh } from "./refresh";
@@ -31,6 +34,7 @@ export {
   resolveDevelopment,
   resolveJwksUri,
 } from "../discovery";
+export type { ExchangeTokenInput } from "./exchange";
 export type {
   OidcCoreOptions,
   ProcessTokensInput,
@@ -45,9 +49,9 @@ import type { OidcCoreOptions } from "./options";
  * Discovers an OIDC issuer and returns the operations you need to
  * implement login: `startSignin`/`resolveSignin` for the authorization
  * code flow, `processTokens` for validation, `refresh`, `getLogoutUrl`,
- * and `fetchUserInfoFromIssuer`. Framework-agnostic: call it once at
- * startup with your issuer and client id, then use the returned object
- * wherever you need it.
+ * `fetchUserInfoFromIssuer`, and `exchangeToken`. Framework-agnostic:
+ * call it once at startup with your issuer and client id, then use the
+ * returned object wherever you need it.
  */
 export async function createOidcCore(opts: OidcCoreOptions) {
   const log = buildLogger(opts.logger, opts.logLevel);
@@ -116,6 +120,8 @@ export async function createOidcCore(opts: OidcCoreOptions) {
     issuer,
     jwks,
     audiencePolicy,
+    tenantPolicy: buildTenantPolicy(issuer, opts.allowedTenants, opts.issuer),
+    delegationPolicy: buildDelegationPolicy(opts.delegation),
     tokenTypePolicy: buildTokenTypePolicy(opts),
     returnToPolicy: buildReturnToPolicy(opts),
     introspectionMode: opts.introspection ?? "opaque-only",
@@ -132,6 +138,7 @@ export async function createOidcCore(opts: OidcCoreOptions) {
   const processTokens = createProcessTokens(ctx, refresh);
   const getLogoutUrl = createLogout(ctx);
   const fetchUserInfoFromIssuer = createUserInfoFetcher(ctx);
+  const exchangeToken = createExchangeToken(ctx);
 
   return {
     /** The discovered `openid-client` configuration, for advanced use. */
@@ -142,6 +149,7 @@ export async function createOidcCore(opts: OidcCoreOptions) {
     refresh,
     getLogoutUrl,
     fetchUserInfoFromIssuer,
+    exchangeToken,
   };
 }
 

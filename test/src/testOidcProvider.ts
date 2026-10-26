@@ -118,62 +118,73 @@ export async function startTestOidcProvider(opts?: {
 
   const oidcCallback = provider.callback();
   const calls = { introspection: 0, userinfo: 0, token: 0 };
+  const countedEndpoints: Record<string, keyof typeof calls> = {
+    "/token/introspection": "introspection",
+    "/me": "userinfo",
+    "/token": "token",
+  };
+
+  type Interaction = Awaited<ReturnType<typeof provider.interactionDetails>>;
+
+  /** Grants whatever the consent prompt says is missing. */
+  async function grantConsent({ prompt, params, session }: Interaction) {
+    const grant = new provider.Grant({
+      accountId: session?.accountId,
+      clientId: params.client_id as string,
+    });
+    const { missingOIDCScope, missingOIDCClaims } = prompt.details;
+    if (missingOIDCScope) {
+      grant.addOIDCScope((missingOIDCScope as string[]).join(" "));
+    }
+    if (missingOIDCClaims) {
+      grant.addOIDCClaims(missingOIDCClaims as string[]);
+    }
+    return grant.save();
+  }
+
+  /** Completes a login or consent prompt the way a user clicking through would. */
+  async function completeInteraction(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ) {
+    const details = await provider.interactionDetails(req, res);
+    const { prompt, params } = details;
+
+    if (prompt.name === "login") {
+      const accountId = String(params.login_hint ?? DEFAULT_ACCOUNT);
+      await provider.interactionFinished(
+        req,
+        res,
+        { login: { accountId } },
+        { mergeWithLastSubmission: false },
+      );
+      return;
+    }
+    if (prompt.name === "consent") {
+      const grantId = await grantConsent(details);
+      await provider.interactionFinished(
+        req,
+        res,
+        { consent: { grantId } },
+        { mergeWithLastSubmission: true },
+      );
+      return;
+    }
+    res.statusCode = 400;
+    res.end(`test oidc provider: unexpected prompt "${prompt.name}"`);
+  }
 
   server.on("request", async (req, res) => {
     try {
       const url = new URL(req.url ?? "/", issuer);
-      if (url.pathname === "/token/introspection") calls.introspection++;
-      if (url.pathname === "/me") calls.userinfo++;
-      if (url.pathname === "/token") calls.token++;
+      const counted = countedEndpoints[url.pathname];
+      if (counted) calls[counted]++;
 
-      const interactionMatch = url.pathname.match(/^\/interaction\/([^/]+)$/);
-
-      if (req.method === "GET" && interactionMatch) {
-        const { prompt, params, session } = await provider.interactionDetails(
-          req,
-          res,
-        );
-
-        if (prompt.name === "login") {
-          const accountId = String(params.login_hint ?? DEFAULT_ACCOUNT);
-          await provider.interactionFinished(
-            req,
-            res,
-            { login: { accountId } },
-            { mergeWithLastSubmission: false },
-          );
-          return;
-        }
-
-        if (prompt.name === "consent") {
-          const grant = new provider.Grant({
-            accountId: session?.accountId,
-            clientId: params.client_id as string,
-          });
-          if (prompt.details.missingOIDCScope) {
-            grant.addOIDCScope(
-              (prompt.details.missingOIDCScope as string[]).join(" "),
-            );
-          }
-          if (prompt.details.missingOIDCClaims) {
-            grant.addOIDCClaims(prompt.details.missingOIDCClaims as string[]);
-          }
-          const grantId = await grant.save();
-          await provider.interactionFinished(
-            req,
-            res,
-            { consent: { grantId } },
-            { mergeWithLastSubmission: true },
-          );
-          return;
-        }
-
-        res.statusCode = 400;
-        res.end(`test oidc provider: unexpected prompt "${prompt.name}"`);
-        return;
+      if (req.method === "GET" && /^\/interaction\/[^/]+$/.test(url.pathname)) {
+        await completeInteraction(req, res);
+      } else {
+        await oidcCallback(req, res);
       }
-
-      await oidcCallback(req, res);
     } catch (err) {
       if (!res.headersSent) {
         res.statusCode = 500;
@@ -181,6 +192,28 @@ export async function startTestOidcProvider(opts?: {
       }
     }
   });
+
+  /** Keeps the cookies a response sets, like a browser's cookie jar. */
+  function storeCookies(cookies: Map<string, string>, res: Response) {
+    for (const setCookie of res.headers.getSetCookie()) {
+      const pair = setCookie.split(";")[0] ?? "";
+      const eq = pair.indexOf("=");
+      if (eq === -1) continue;
+      cookies.set(pair.slice(0, eq).trim(), pair.slice(eq + 1).trim());
+    }
+  }
+
+  /** Where a redirect response points, or a thrown error for anything else. */
+  async function redirectTarget(res: Response, current: URL): Promise<URL> {
+    const location = res.headers.get("location");
+    if (res.status >= 300 && res.status < 400 && location) {
+      return new URL(location, current);
+    }
+    const body = await res.text().catch(() => "");
+    throw new Error(
+      `unexpected ${res.status} response at ${current} while driving the authorization flow: ${body.slice(0, 300)}`,
+    );
+  }
 
   async function runAuthorizationFlow(
     authorizationUrl: URL,
@@ -190,80 +223,59 @@ export async function startTestOidcProvider(opts?: {
     if (accountId) current.searchParams.set("login_hint", accountId);
 
     const cookies = new Map<string, string>();
-    const cookieHeader = () =>
-      [...cookies.entries()]
-        .map(([key, value]) => `${key}=${value}`)
-        .join("; ");
-
     const redirectTargetOrigin = new URL(redirectUri).origin;
 
     for (let hop = 0; hop < 20; hop++) {
+      const cookie = [...cookies.entries()]
+        .map(([key, value]) => `${key}=${value}`)
+        .join("; ");
       const res = await fetch(current, {
         redirect: "manual",
-        headers: cookieHeader() ? { cookie: cookieHeader() } : undefined,
+        headers: cookie ? { cookie } : undefined,
       });
+      storeCookies(cookies, res);
 
-      for (const setCookie of res.headers.getSetCookie()) {
-        const pair = setCookie.split(";")[0];
-        const eq = pair.indexOf("=");
-        if (eq === -1) continue;
-        cookies.set(pair.slice(0, eq).trim(), pair.slice(eq + 1).trim());
-      }
-
-      if (res.status >= 300 && res.status < 400) {
-        const location = res.headers.get("location");
-        if (!location)
-          throw new Error("redirect response without a Location header");
-        const next = new URL(location, current);
-        if (next.origin === redirectTargetOrigin) return next;
-        current = next;
-        continue;
-      }
-
-      const body = await res.text().catch(() => "");
-      throw new Error(
-        `unexpected ${res.status} response at ${current} while driving the authorization flow: ${body.slice(0, 300)}`,
-      );
+      current = await redirectTarget(res, current);
+      if (current.origin === redirectTargetOrigin) return current;
     }
 
     throw new Error("too many redirects while driving the authorization flow");
   }
 
+  type SignOptions = {
+    expired?: boolean;
+    badKid?: boolean;
+    audience?: string | string[];
+    expiresIn?: number;
+    noExpiry?: boolean;
+    typ?: string;
+  };
+
+  /** `exp` for a minted token: explicit, already passed, or an hour out. */
+  function expirationFor(now: number, opts: SignOptions): number {
+    if (opts.expiresIn !== undefined) return now + opts.expiresIn;
+    return opts.expired ? now - 60 : now + 3600;
+  }
+
+  const signingKeys = {
+    jwks: { key: privateKey as CryptoKey, kid },
+    unknown: { key: badPrivateKey as CryptoKey, kid: badKid },
+  };
+
   async function sign(
     claims: { sub: string; email?: string } & Record<string, unknown>,
-    opts?: {
-      expired?: boolean;
-      badKid?: boolean;
-      audience?: string | string[];
-      expiresIn?: number;
-      noExpiry?: boolean;
-      typ?: string;
-    },
+    opts: SignOptions = {},
   ): Promise<string> {
     const now = Math.floor(Date.now() / 1000);
-    const signingKey = opts?.badKid
-      ? (badPrivateKey as CryptoKey)
-      : (privateKey as CryptoKey);
+    const signing = opts.badKid ? signingKeys.unknown : signingKeys.jwks;
     const jwt = new SignJWT(claims)
-      .setProtectedHeader({
-        alg: "RS256",
-        kid: opts?.badKid ? badKid : kid,
-        ...(opts?.typ ? { typ: opts.typ } : {}),
-      })
+      .setProtectedHeader({ alg: "RS256", kid: signing.kid, typ: opts.typ })
       .setIssuer(issuer)
-      .setAudience(opts?.audience ?? clientId)
+      .setAudience(opts.audience ?? clientId)
       .setSubject(claims.sub)
-      .setIssuedAt(opts?.expired ? now - 120 : now);
-    if (!opts?.noExpiry) {
-      jwt.setExpirationTime(
-        opts?.expiresIn !== undefined
-          ? now + opts.expiresIn
-          : opts?.expired
-            ? now - 60
-            : now + 3600,
-      );
-    }
-    return jwt.sign(signingKey);
+      .setIssuedAt(opts.expired ? now - 120 : now);
+    if (!opts.noExpiry) jwt.setExpirationTime(expirationFor(now, opts));
+    return jwt.sign(signing.key);
   }
 
   return {

@@ -104,6 +104,59 @@ export function assertAudienceClaim(
 }
 
 /**
+ * An id token's `azp`, when present, must be this client. Without one, an
+ * `aud` naming several parties leaves the authorized one unidentified.
+ */
+function assertIdTokenAuthorizedParty(
+  claims: AudienceClaims,
+  clientId: string,
+): void {
+  const azp = claims.azp;
+  if (azp !== undefined && azp !== null) {
+    if (azp === clientId) return;
+    throw new OidcAudienceError(
+      "id",
+      "azp",
+      `id token "azp" (${String(azp)}) is not this client id (${clientId})`,
+    );
+  }
+  const aud = toAudienceList(claims.aud);
+  if (aud.length > 1) {
+    throw new OidcAudienceError(
+      "id",
+      "azp",
+      `id token "aud" names multiple parties (${aud.join(", ")}) but carries no "azp" claim identifying the authorized one`,
+    );
+  }
+}
+
+/** The first authorized-party claim an access token carries must be this client. */
+function assertAccessTokenAuthorizedParty(
+  claims: AudienceClaims,
+  policy: AudiencePolicy,
+): void {
+  const { clientId, authorizedPartyClaims } = policy;
+  const party = findAuthorizedParty(claims, authorizedPartyClaims);
+  if (!party) {
+    throw new OidcAudienceError(
+      "access",
+      "aud",
+      `access token cannot be bound to this client: it carries none of the authorized-party claims (${authorizedPartyClaims.join(", ")}) and no "expectedAudience" is configured. Set "expectedAudience" to the value this resource server expects in "aud", extend "authorizedPartyClaims" with the claim your provider uses, or supply "verifyAudience".`,
+    );
+  }
+  if (party.value === clientId) return;
+  throw new OidcAudienceError(
+    "access",
+    party.claim,
+    `access token "${party.claim}" (${
+      typeof party.value === "string"
+        ? party.value
+        : JSON.stringify(party.value)
+    }) is not this client id (${clientId})`,
+  );
+}
+
+/**
  * Binds a token to this client via `azp` (id tokens) or an
  * authorized-party claim (access tokens). For access tokens, set
  * {@link AudiencePolicy.expectedAudience} if you're a resource server
@@ -114,56 +167,13 @@ export function assertAuthorizedParty(
   tokenKind: TokenKind,
   policy: AudiencePolicy,
 ): void {
-  const { clientId, expectedAudience, authorizedPartyClaims } = policy;
-
   if (tokenKind === "id") {
-    const azp = claims.azp;
-    if (azp !== undefined && azp !== null) {
-      if (azp !== clientId) {
-        throw new OidcAudienceError(
-          "id",
-          "azp",
-          `id token "azp" (${String(azp)}) is not this client id (${clientId})`,
-        );
-      }
-      return;
-    }
-    const aud = toAudienceList(claims.aud);
-    if (aud.length > 1) {
-      throw new OidcAudienceError(
-        "id",
-        "azp",
-        `id token "aud" names multiple parties (${aud.join(", ")}) but carries no "azp" claim identifying the authorized one`,
-      );
-    }
-    return;
-  }
-
-  if (expectedAudience?.length) {
+    assertIdTokenAuthorizedParty(claims, policy.clientId);
+  } else if (policy.expectedAudience?.length) {
     assertAudienceClaim(claims, "access", policy);
-    return;
+  } else {
+    assertAccessTokenAuthorizedParty(claims, policy);
   }
-
-  const party = findAuthorizedParty(claims, authorizedPartyClaims);
-  if (party) {
-    if (typeof party.value !== "string" || party.value !== clientId) {
-      throw new OidcAudienceError(
-        "access",
-        party.claim,
-        `access token "${party.claim}" (${
-          typeof party.value === "string"
-            ? party.value
-            : JSON.stringify(party.value)
-        }) is not this client id (${clientId})`,
-      );
-    }
-    return;
-  }
-  throw new OidcAudienceError(
-    "access",
-    "aud",
-    `access token cannot be bound to this client: it carries none of the authorized-party claims (${authorizedPartyClaims.join(", ")}) and no "expectedAudience" is configured. Set "expectedAudience" to the value this resource server expects in "aud", extend "authorizedPartyClaims" with the claim your provider uses, or supply "verifyAudience".`,
-  );
 }
 
 /**

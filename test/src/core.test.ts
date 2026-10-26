@@ -61,7 +61,7 @@ describe("startSignin", () => {
 
     const params = result.authorizationUrl.searchParams;
     expect(params.get("redirect_uri")).toBe(idp.redirectUri);
-    expect(params.get("scope")).toBe("openid profile email");
+    expect(params.get("scope")).toBe("openid profile email offline_access");
     expect(params.get("code_challenge_method")).toBe("S256");
     expect(params.get("code_challenge")).toBeTruthy();
     expect(params.get("state")).toBe(result.state);

@@ -1,4 +1,4 @@
-# @m1212e/oidc
+# oidc
 
 OpenID Connect login and token validation for server-side apps.
 

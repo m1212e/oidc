@@ -6,6 +6,7 @@ import {
 } from "../errors";
 import type { CoreContext } from "./context";
 import { assertGrantedIdToken } from "./grant";
+import { toList } from "./resource";
 
 const TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
 const ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token";
@@ -44,11 +45,6 @@ function assertNonEmpty(value: unknown, label: string): void {
       `exchangeToken was given a \`${label}\` that is not a non-empty string`,
     );
   }
-}
-
-function toList(value: string | readonly string[] | undefined): string[] {
-  if (value === undefined) return [];
-  return typeof value === "string" ? [value] : [...value];
 }
 
 /**

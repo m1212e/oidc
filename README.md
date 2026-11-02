@@ -147,6 +147,7 @@ await oidc.fetchUserInfoFromIssuer({ accessToken, expectedSubject: user.sub });
 | `verifyAudience`               |                                            | you need a custom check: `(claims, kind) => claims.aud === "x"`                                    |
 | `allowedReturnToOrigins`       | `[]`                                       | `returnTo` should allow absolute URLs, e.g. `["https://admin.example.com"]`                        |
 | `scope` (on `startSignin`)     | `"openid profile email offline_access"`    | set `"openid profile email"` if you don't want a refresh token                                     |
+| `resource`                     |                                            | request tokens for an API resource (RFC 8707), e.g. so Logto issues JWT instead of opaque tokens   |
 | `introspection`                | `"opaque-only"`                            | `"auto"`: also introspect JWTs that fail locally. `"never"`: never call the introspection endpoint |
 | `requireIntrospectedTokenType` | `true`                                     | set `false` if your provider's introspection omits `token_type`                                    |
 | `delegation`                   | `"reject"`                                 | accept tokens with an `act` claim: `"allow"`, or `(actors, kind) => boolean`                       |

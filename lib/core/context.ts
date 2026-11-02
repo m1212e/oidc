@@ -21,6 +21,8 @@ export type CoreContext = {
   tokenTypePolicy: TokenTypePolicy;
   returnToPolicy: ReturnToPolicy;
   introspectionMode: "opaque-only" | "auto" | "never";
+  /** {@link OidcCoreOptions.resource}, checked. Empty when unset. */
+  resources: string[];
   clockTolerance: number;
   signingAlgorithms: string[];
 };

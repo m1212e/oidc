@@ -16,6 +16,7 @@ import { parseOIDCFlowState } from "../types";
 import type { CoreContext } from "./context";
 import { assertGrantedIdToken } from "./grant";
 import type { ResolveSigninResult, StartSigninResult } from "./options";
+import { withResources } from "./resource";
 
 export function createSignin(ctx: CoreContext) {
   /**
@@ -49,14 +50,20 @@ export function createSignin(ctx: CoreContext) {
       nonce,
     });
 
-    const authorizationUrl = buildAuthorizationUrl(ctx.config, {
-      redirect_uri: redirectUri,
-      scope,
-      code_challenge: codeChallenge,
-      code_challenge_method: "S256",
-      state,
-      nonce,
-    });
+    const authorizationUrl = buildAuthorizationUrl(
+      ctx.config,
+      withResources(
+        {
+          redirect_uri: redirectUri,
+          scope,
+          code_challenge: codeChallenge,
+          code_challenge_method: "S256",
+          state,
+          nonce,
+        },
+        ctx.resources,
+      ),
+    );
 
     return { codeVerifier, authorizationUrl, state };
   }
@@ -87,12 +94,17 @@ export function createSignin(ctx: CoreContext) {
 
     let tokens: RefreshedTokenSet;
     try {
-      tokens = await authorizationCodeGrant(ctx.config, callbackUrl, {
-        pkceCodeVerifier: codeVerifier,
-        expectedState,
-        expectedNonce: parsedState.nonce,
-        idTokenExpected: true,
-      });
+      tokens = await authorizationCodeGrant(
+        ctx.config,
+        callbackUrl,
+        {
+          pkceCodeVerifier: codeVerifier,
+          expectedState,
+          expectedNonce: parsedState.nonce,
+          idTokenExpected: true,
+        },
+        withResources({}, ctx.resources),
+      );
     } catch (err) {
       throw new OidcGrantError(
         "authorization_code",

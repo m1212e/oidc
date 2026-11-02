@@ -31,6 +31,12 @@ const DEFAULT_ACCOUNT = "test-user";
 
 export async function startTestOidcProvider(opts?: {
   rpInitiatedLogout?: boolean;
+  /**
+   * Makes the provider a resource server for this indicator (RFC 8707),
+   * issuing JWT access tokens for it when a request names it, and opaque
+   * ones otherwise, which is how Logto behaves.
+   */
+  resourceIndicator?: string;
 }): Promise<TestOidcProvider> {
   const clientId = "test-client";
   const redirectUri = "https://app.example.com/callback";
@@ -73,6 +79,22 @@ export async function startTestOidcProvider(opts?: {
       introspection: { enabled: true },
       devInteractions: { enabled: false },
       rpInitiatedLogout: { enabled: opts?.rpInitiatedLogout ?? true },
+      resourceIndicators: {
+        enabled: opts?.resourceIndicator !== undefined,
+        defaultResource: () => undefined,
+        useGrantedResource: () => true,
+        getResourceServerInfo(_ctx, resourceIndicator) {
+          if (resourceIndicator !== opts?.resourceIndicator) {
+            throw new Error(`unknown resource indicator ${resourceIndicator}`);
+          }
+          return {
+            scope: "api:read",
+            audience: resourceIndicator,
+            accessTokenFormat: "jwt",
+            jwt: { sign: { alg: "RS256" } },
+          };
+        },
+      },
     },
     async findAccount(_ctx, sub) {
       return {
@@ -100,12 +122,18 @@ export async function startTestOidcProvider(opts?: {
       accountId: session?.accountId,
       clientId: params.client_id as string,
     });
-    const { missingOIDCScope, missingOIDCClaims } = prompt.details;
+    const { missingOIDCScope, missingOIDCClaims, missingResourceScopes } =
+      prompt.details;
     if (missingOIDCScope) {
       grant.addOIDCScope((missingOIDCScope as string[]).join(" "));
     }
     if (missingOIDCClaims) {
       grant.addOIDCClaims(missingOIDCClaims as string[]);
+    }
+    for (const [indicator, scopes] of Object.entries(
+      (missingResourceScopes ?? {}) as Record<string, string[]>,
+    )) {
+      grant.addResourceScope(indicator, scopes.join(" "));
     }
     return grant.save();
   }

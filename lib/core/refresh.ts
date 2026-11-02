@@ -8,6 +8,7 @@ import {
 import { subjectOf } from "../tokenValidation";
 import type { CoreContext } from "./context";
 import { assertGrantedIdToken } from "./grant";
+import { withResources } from "./resource";
 
 export function createRefresh(ctx: CoreContext) {
   /**
@@ -32,7 +33,11 @@ export function createRefresh(ctx: CoreContext) {
 
     let tokens: RefreshedTokenSet;
     try {
-      tokens = await refreshTokenGrant(ctx.config, refreshToken);
+      tokens = await refreshTokenGrant(
+        ctx.config,
+        refreshToken,
+        withResources({}, ctx.resources),
+      );
     } catch (err) {
       throw new OidcGrantError(
         "refresh_token",

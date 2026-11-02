@@ -42,6 +42,20 @@ export type OidcCoreOptions = {
   accessTokenTyp?: string;
   requireIntrospectedTokenType?: boolean;
   introspection?: "opaque-only" | "auto" | "never";
+  /**
+   * Resource indicator(s) (RFC 8707) to request tokens for, sent with the
+   * authorization request, the code exchange and every refresh. Set this
+   * when the provider issues access tokens for an API resource: Logto, for
+   * one, issues an opaque access token without it, which can only be
+   * validated by introspection, a round trip to the IdP per request. With
+   * it, the access token is a JWT for that resource, verified offline.
+   *
+   * The token's `aud` is then the resource, not the client id. That
+   * passes the default {@link authorizedPartyClaims} check as long as the
+   * token names the client (Logto's `client_id` does); set
+   * {@link expectedAudience} to the resource to check `aud` instead.
+   */
+  resource?: string | readonly string[];
   allowedReturnToOrigins?: readonly string[];
   clockTolerance?: string | number;
   signingAlgorithms?: string[];

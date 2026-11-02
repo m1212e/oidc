@@ -23,6 +23,7 @@ import { createExchangeToken } from "./exchange";
 import { createLogout } from "./logout";
 import { createProcessTokens } from "./processTokens";
 import { createRefresh } from "./refresh";
+import { resolveResources } from "./resource";
 import { createSignin } from "./signin";
 import { createUserInfoFetcher } from "./userInfo";
 
@@ -121,6 +122,7 @@ export async function createOidcCore(opts: OidcCoreOptions) {
     tokenTypePolicy: buildTokenTypePolicy(opts),
     returnToPolicy: buildReturnToPolicy(opts),
     introspectionMode: opts.introspection ?? "opaque-only",
+    resources: resolveResources(opts.resource),
     clockTolerance,
     signingAlgorithms: resolveSigningAlgorithms(
       config,

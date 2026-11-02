@@ -148,7 +148,7 @@ await oidc.fetchUserInfoFromIssuer({ accessToken, expectedSubject: user.sub });
 | `allowedReturnToOrigins`       | `[]`                                       | `returnTo` should allow absolute URLs, e.g. `["https://admin.example.com"]`                        |
 | `scope` (on `startSignin`)     | `"openid profile email offline_access"`    | set `"openid profile email"` if you don't want a refresh token                                     |
 | `resource`                     |                                            | request tokens for an API resource (RFC 8707), e.g. so Logto issues JWT instead of opaque tokens   |
-| `prompt`                       |                                            | `"consent"` for a refresh token from Logto / node-oidc-provider (OIDC Core §11); per call on `startSignin` |
+| `prompt`                       |                                            | `"consent"` gets Logto / node-oidc-provider to issue a refresh token (OIDC Core §11)               |
 | `introspection`                | `"opaque-only"`                            | `"auto"`: also introspect JWTs that fail locally. `"never"`: never call the introspection endpoint |
 | `requireIntrospectedTokenType` | `true`                                     | set `false` if your provider's introspection omits `token_type`                                    |
 | `delegation`                   | `"reject"`                                 | accept tokens with an `act` claim: `"allow"`, or `(actors, kind) => boolean`                       |

@@ -23,6 +23,8 @@ export type CoreContext = {
   introspectionMode: "opaque-only" | "auto" | "never";
   /** {@link OidcCoreOptions.resource}, checked. Empty when unset. */
   resources: string[];
+  /** {@link OidcCoreOptions.prompt}. */
+  prompt: string | undefined;
   clockTolerance: number;
   signingAlgorithms: string[];
 };

@@ -121,6 +121,8 @@ const OIDCFlowStateSchema = Type.Object({
   visitedUrl: Type.String(),
   random: Type.String(),
   nonce: Type.Optional(Type.String()),
+  /** Whether the scope asked for `offline_access`, so the callback can tell when no refresh token came. */
+  offlineAccess: Type.Optional(Type.Boolean()),
 });
 export type OIDCFlowState = Static<typeof OIDCFlowStateSchema>;
 const CompiledOIDCFlowState = Compile(OIDCFlowStateSchema);

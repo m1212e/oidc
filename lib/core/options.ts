@@ -56,6 +56,16 @@ export type OidcCoreOptions = {
    * {@link expectedAudience} to the resource to check `aud` instead.
    */
   resource?: string | readonly string[];
+  /**
+   * The `prompt` sent with every authorization request (space-separated
+   * values: `"consent"`, `"login"`, `"select_account"`, `"none"`), unless
+   * `startSignin` passes its own. OIDC Core §11 requires `"consent"` when
+   * the scope asks for `offline_access`, and providers that follow it to
+   * the letter (Logto, anything on node-oidc-provider) silently issue no
+   * refresh token without it. Others (Google, Entra ID) show their consent
+   * screen on every sign-in when it is sent, so it is not the default.
+   */
+  prompt?: string;
   allowedReturnToOrigins?: readonly string[];
   clockTolerance?: string | number;
   signingAlgorithms?: string[];

@@ -18,6 +18,27 @@ import { assertGrantedIdToken } from "./grant";
 import type { ResolveSigninResult, StartSigninResult } from "./options";
 import { withResources } from "./resource";
 
+/**
+ * Checks a `prompt`: a non-empty list of space-separated values, where
+ * `none` stands alone (OIDC Core §3.1.2.1). `undefined` sends none.
+ */
+export function resolvePrompt(prompt: string | undefined): string | undefined {
+  if (prompt === undefined) return undefined;
+  const values =
+    typeof prompt === "string" ? prompt.split(/\s+/).filter(Boolean) : [];
+  if (values.length === 0) {
+    throw new OidcInputError(
+      `invalid prompt (${JSON.stringify(prompt)}): expected space-separated values such as "consent" or "login"`,
+    );
+  }
+  if (values.includes("none") && values.length > 1) {
+    throw new OidcInputError(
+      `invalid prompt ("${prompt}"): "none" cannot be combined with other values`,
+    );
+  }
+  return values.join(" ");
+}
+
 export function createSignin(ctx: CoreContext) {
   /**
    * Builds the authorization URL. Store `codeVerifier` and `state` until the callback.
@@ -27,15 +48,19 @@ export function createSignin(ctx: CoreContext) {
     redirectUri,
     returnTo,
     scope = "openid profile email offline_access",
+    prompt,
   }: {
     redirectUri: string;
     returnTo: string;
     scope?: string;
+    /** Replaces the core's `prompt` option for this sign-in. */
+    prompt?: string;
   }): Promise<StartSigninResult> {
     assertSafeReturnTo(returnTo, ctx.returnToPolicy);
     assertSafeRedirectUri(redirectUri, "redirectUri");
 
-    if (!scope.split(/\s+/).includes("openid")) {
+    const scopes = scope.split(/\s+/);
+    if (!scopes.includes("openid")) {
       throw new OidcInputError(
         `invalid scope ("${scope}"): it must include "openid"`,
       );
@@ -48,7 +73,10 @@ export function createSignin(ctx: CoreContext) {
       visitedUrl: returnTo,
       random: randomState(),
       nonce,
+      ...(scopes.includes("offline_access") && { offlineAccess: true }),
     });
+    const sentPrompt =
+      prompt === undefined ? ctx.prompt : resolvePrompt(prompt);
 
     const authorizationUrl = buildAuthorizationUrl(
       ctx.config,
@@ -60,6 +88,7 @@ export function createSignin(ctx: CoreContext) {
           code_challenge_method: "S256",
           state,
           nonce,
+          ...(sentPrompt && { prompt: sentPrompt }),
         },
         ctx.resources,
       ),
@@ -113,6 +142,11 @@ export function createSignin(ctx: CoreContext) {
       );
     }
     assertGrantedIdToken(ctx, tokens);
+    if (parsedState.offlineAccess && !tokens.refresh_token) {
+      ctx.log.warn(
+        '[oidc] the sign-in asked for "offline_access" but the provider issued no refresh token, so the session ends when its access token expires. Providers following OIDC Core §11 to the letter (Logto, node-oidc-provider) need prompt "consent" for it: set the "prompt" option.',
+      );
+    }
     return { tokens, returnTo };
   }
 

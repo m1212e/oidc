@@ -24,7 +24,7 @@ import { createLogout } from "./logout";
 import { createProcessTokens } from "./processTokens";
 import { createRefresh } from "./refresh";
 import { resolveResources } from "./resource";
-import { createSignin } from "./signin";
+import { createSignin, resolvePrompt } from "./signin";
 import { createUserInfoFetcher } from "./userInfo";
 
 export {
@@ -123,6 +123,7 @@ export async function createOidcCore(opts: OidcCoreOptions) {
     returnToPolicy: buildReturnToPolicy(opts),
     introspectionMode: opts.introspection ?? "opaque-only",
     resources: resolveResources(opts.resource),
+    prompt: resolvePrompt(opts.prompt),
     clockTolerance,
     signingAlgorithms: resolveSigningAlgorithms(
       config,

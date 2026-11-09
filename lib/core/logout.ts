@@ -1,6 +1,7 @@
 import { buildEndSessionUrl } from "openid-client";
 import { OidcLogoutError } from "../errors";
 import { assertSafeRedirectUri } from "../returnTo";
+import { resolveUiLocales } from "../uiLocales";
 import type { CoreContext } from "./context";
 
 export function createLogout(ctx: CoreContext) {
@@ -12,17 +13,22 @@ export function createLogout(ctx: CoreContext) {
     postLogoutRedirectUri,
     idTokenHint,
     state,
+    uiLocales,
   }: {
     postLogoutRedirectUri: string;
     idTokenHint?: string;
     state?: string;
+    /** Preferred language of the provider's logout pages (`ui_locales`), see `startSignin`. */
+    uiLocales?: string | readonly string[];
   }): Promise<URL> {
     assertSafeRedirectUri(postLogoutRedirectUri, "postLogoutRedirectUri");
+    const sentUiLocales = resolveUiLocales(uiLocales);
     try {
       return buildEndSessionUrl(ctx.config, {
         post_logout_redirect_uri: postLogoutRedirectUri,
         ...(idTokenHint ? { id_token_hint: idTokenHint } : {}),
         ...(state ? { state } : {}),
+        ...(sentUiLocales ? { ui_locales: sentUiLocales } : {}),
       });
     } catch (err) {
       throw new OidcLogoutError(

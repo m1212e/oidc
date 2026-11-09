@@ -36,6 +36,8 @@ const { authorizationUrl, codeVerifier, state } = await oidc.startSignin({
 return Response.redirect(authorizationUrl);
 ```
 
+Pass `uiLocales` (`"de"`, `"de-DE de en"` or `["de", "en"]`, most preferred first) to ask the provider to show its login pages in a language. It is sent as the standard `ui_locales` parameter, which providers may ignore.
+
 **2. Handle the callback**
 
 ```ts
@@ -99,6 +101,7 @@ Without `expectedAudience`, the token's `azp` / `client_id` claim must equal `cl
 const url = await oidc.getLogoutUrl({
   postLogoutRedirectUri: "https://app.example.com/",
   idTokenHint: session.id_token,
+  uiLocales: "de", // optional, as for startSignin
 });
 ```
 

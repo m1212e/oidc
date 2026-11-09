@@ -13,6 +13,7 @@ import {
 } from "../errors";
 import { assertSafeRedirectUri, assertSafeReturnTo } from "../returnTo";
 import { parseOIDCFlowState } from "../types";
+import { resolveUiLocales } from "../uiLocales";
 import type { CoreContext } from "./context";
 import { assertGrantedIdToken } from "./grant";
 import type { ResolveSigninResult, StartSigninResult } from "./options";
@@ -49,12 +50,19 @@ export function createSignin(ctx: CoreContext) {
     returnTo,
     scope = "openid profile email offline_access",
     prompt,
+    uiLocales,
   }: {
     redirectUri: string;
     returnTo: string;
     scope?: string;
     /** Replaces the core's `prompt` option for this sign-in. */
     prompt?: string;
+    /**
+     * Preferred language of the provider's login pages (`ui_locales`), most
+     * preferred first: `"de"`, `"de-DE de en"` or `["de", "en"]`. A hint the
+     * provider may ignore.
+     */
+    uiLocales?: string | readonly string[];
   }): Promise<StartSigninResult> {
     assertSafeReturnTo(returnTo, ctx.returnToPolicy);
     assertSafeRedirectUri(redirectUri, "redirectUri");
@@ -77,6 +85,7 @@ export function createSignin(ctx: CoreContext) {
     });
     const sentPrompt =
       prompt === undefined ? ctx.prompt : resolvePrompt(prompt);
+    const sentUiLocales = resolveUiLocales(uiLocales);
 
     const authorizationUrl = buildAuthorizationUrl(
       ctx.config,
@@ -89,6 +98,7 @@ export function createSignin(ctx: CoreContext) {
           state,
           nonce,
           ...(sentPrompt && { prompt: sentPrompt }),
+          ...(sentUiLocales && { ui_locales: sentUiLocales }),
         },
         ctx.resources,
       ),

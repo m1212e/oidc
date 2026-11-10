@@ -138,6 +138,12 @@ await oidc.refresh({ refreshToken, expectedSubject: user.sub });
 await oidc.fetchUserInfoFromIssuer({ accessToken, expectedSubject: user.sub });
 ```
 
+For anything else, `oidc.configuration` is the discovered `openid-client` configuration and `oidc.client` the `openid-client` module it was created with. Call it through `oidc.client`, not your own `openid-client` import: its functions reject a configuration made by any other copy of the package.
+
+```ts
+await oidc.client.refreshTokenGrant(oidc.configuration, refreshToken);
+```
+
 ## Options
 
 | Option                         | Default                                    | Use it when                                                                                        |

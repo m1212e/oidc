@@ -1,9 +1,5 @@
 import { createRemoteJWKSet } from "jose";
-import {
-  allowInsecureRequests,
-  clockTolerance as clockToleranceOption,
-  discovery,
-} from "openid-client";
+import * as client from "openid-client";
 import { buildAudiencePolicy } from "../audience";
 import { buildDelegationPolicy } from "../delegation";
 import {
@@ -74,16 +70,16 @@ export async function createOidcCore(opts: OidcCoreOptions) {
 
   const clockTolerance = resolveClockTolerance(opts.clockTolerance);
 
-  const config = await discovery(
+  const config = await client.discovery(
     new URL(opts.issuer),
     opts.clientId,
     {
       client_secret: opts.clientSecret,
       token_endpoint_auth_method: opts.clientSecret ? undefined : "none",
-      [clockToleranceOption]: clockTolerance,
+      [client.clockTolerance]: clockTolerance,
     },
     undefined,
-    { execute: development ? [allowInsecureRequests] : [] },
+    { execute: development ? [client.allowInsecureRequests] : [] },
   );
 
   assertDiscoveredIssuer(opts.issuer, config.serverMetadata().issuer);
@@ -141,6 +137,14 @@ export async function createOidcCore(opts: OidcCoreOptions) {
 
   return {
     configuration: config,
+    /**
+     * The `openid-client` module `configuration` was created with. Its functions check that the
+     * configuration they are given is an instance of their own `Configuration` class, so a consumer
+     * whose own `openid-client` resolves to another copy (any other version) cannot use
+     * `configuration` with it. Call the grants through this one instead.
+     * @example await oidc.client.refreshTokenGrant(oidc.configuration, refreshToken);
+     */
+    client,
     startSignin,
     resolveSignin,
     processTokens,

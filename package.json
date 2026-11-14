@@ -15,11 +15,13 @@
     "format": "bun run lint",
     "lint": "bunx biome check --write .",
     "build": "tsdown",
+    "lint:package": "publint && attw --pack . --profile node16",
     "typecheck": "tsc --noEmit",
     "test:types": "tsc --noEmit",
     "fallow": "fallow"
   },
   "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.5",
     "@biomejs/biome": "^2.6.3",
     "@types/bun": "^1.4.4",
     "@types/node": "^26.6.5",
@@ -27,6 +29,7 @@
     "fallow": "^3.36.0",
     "lefthook": "^2.2.2",
     "oidc-provider": "9.13.0",
+    "publint": "^0.3.25",
     "tsdown": "^0.22.14",
     "typescript": "^7.0.2"
   },
